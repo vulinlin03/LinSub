@@ -446,7 +446,7 @@ class LinSubController(QObject):
         self._manual_global_cache_gib = settings["manual_global_cache_gib"]
         self._manual_editor_layout = {
             "inspectorWidth": int(settings.get("manual_editor_inspector_width", 356)),
-            "timelineHeight": int(settings.get("manual_editor_timeline_height", 280)),
+            "timelineHeight": int(settings.get("manual_editor_timeline_height", 180)),
             "compare": bool(settings.get("manual_editor_compare", False)),
         }
         self._manual_editor_workspace = dict(settings.get("manual_editor_workspace") or {})
@@ -3266,7 +3266,7 @@ class LinSubController(QObject):
     def saveManualEditorLayout(self, inspector_width, timeline_height, compare):
         layout = {
             "inspectorWidth": max(300, min(520, int(inspector_width))),
-            "timelineHeight": max(200, min(520, int(timeline_height))),
+            "timelineHeight": max(120, min(520, int(timeline_height))),
             "compare": bool(compare),
         }
         if layout == self._manual_editor_layout:

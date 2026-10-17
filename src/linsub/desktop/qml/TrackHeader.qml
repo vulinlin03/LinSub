@@ -50,7 +50,7 @@ Rectangle {
             objectName: "trackMenuButton"
             property bool menuWasOpenOnPress: false
             visible: root.menuAvailable
-            controlSize: 28
+            controlSize: root.height < 32 ? 24 : 28
             iconName: !root.trackVisible ? "hide"
                 : root.muted || root.secondaryMuted ? "muted" : "more"
             onPressed: menuWasOpenOnPress = trackMenu.visible

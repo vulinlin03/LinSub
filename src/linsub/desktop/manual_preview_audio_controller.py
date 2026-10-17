@@ -391,22 +391,28 @@ class ManualPreviewAudioController(QObject):
                 return samples
         command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(path), "-vn"]
         if duration is not None:
-            from linsub.pipeline.audio_timeline import _atempo_filters, trim_silence
-            from linsub.utils.audio import AudioSegment
-            audio = trim_silence(AudioSegment.from_file(path))
-            # Match export: compress only an overrun. A shorter narration must
-            # end naturally and leave the remainder of its slot silent.
-            from linsub.pipeline.speech_timing import fitted_speech_duration_ms
+            try:
+                from linsub.pipeline.audio_timeline import _atempo_filters, trim_silence
+                from linsub.utils.audio import AudioSegment
+                audio = trim_silence(AudioSegment.from_file(path))
+                # Match export: compress only an overrun. A shorter narration must
+                # end naturally and leave the remainder of its slot silent.
+                from linsub.pipeline.speech_timing import fitted_speech_duration_ms
 
-            target = max(1, fitted_speech_duration_ms(len(audio), duration))
-            speed = len(audio) / target
-            with tempfile.TemporaryDirectory(prefix="linsub-preview-voice-", dir=TMP_DIR) as work:
-                source = Path(work) / "voice.wav"
-                audio.export(source, format="wav").close()
-                command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(source)]
-                if len(audio) > duration:
-                    command += ["-af", _atempo_filters(speed)]
-                command += ["-t", str(target / 1000), "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"]
+                target = max(1, fitted_speech_duration_ms(len(audio), duration))
+                speed = len(audio) / target
+                with tempfile.TemporaryDirectory(prefix="linsub-preview-voice-", dir=TMP_DIR) as work:
+                    source = Path(work) / "voice.wav"
+                    audio.export(source, format="wav").close()
+                    command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(source)]
+                    if len(audio) > duration:
+                        command += ["-af", _atempo_filters(speed)]
+                    command += ["-t", str(target / 1000), "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"]
+                    samples = self._decode_to_pcm(command, generation, cache_path)
+            except Exception as decode_exc:
+                _LOG.warning("Falling back to direct ffmpeg decoding for %s: %s", path, decode_exc)
+                command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(path),
+                           "-t", str(max(1, duration) / 1000), "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"]
                 samples = self._decode_to_pcm(command, generation, cache_path)
         else:
             command += ["-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"]

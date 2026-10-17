@@ -20,7 +20,7 @@ DEFAULT_SETTINGS = {
     "manual_project_cache_gib": 4,
     "manual_global_cache_gib": 16,
     "manual_editor_inspector_width": 356,
-    "manual_editor_timeline_height": 280,
+    "manual_editor_timeline_height": 180,
     "manual_editor_compare": False,
     "manual_editor_workspace": {
         "placements": {
@@ -138,7 +138,7 @@ def save_settings(settings: dict) -> dict:
         "manual_project_cache_gib": bounded_integer("manual_project_cache_gib", 4, 1, 64),
         "manual_global_cache_gib": bounded_integer("manual_global_cache_gib", 16, 4, 256),
         "manual_editor_inspector_width": bounded_integer("manual_editor_inspector_width", 356, 300, 520),
-        "manual_editor_timeline_height": bounded_integer("manual_editor_timeline_height", 280, 200, 520),
+        "manual_editor_timeline_height": bounded_integer("manual_editor_timeline_height", 180, 120, 520),
         "manual_editor_compare": bool(merged.get("manual_editor_compare", False)),
         "manual_editor_workspace": workspace,
     }

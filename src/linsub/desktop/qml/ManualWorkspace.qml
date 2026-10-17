@@ -21,7 +21,7 @@ Item {
     readonly property var dockPlacements: ({ "tools": "left", "properties": "right", "tasks": "right" })
     property string rightActivePanel: String(AppController.manualEditorWorkspace.rightActive || "tasks")
     property int leftDockWidth: Number(AppController.manualEditorWorkspace.leftWidth || 240)
-    property int timelineDesiredHeight: Number(AppController.manualEditorLayout.timelineHeight || 280)
+    property int timelineDesiredHeight: Number(AppController.manualEditorLayout.timelineHeight || 180)
     property string activeMonitor: String(AppController.manualEditorWorkspace.monitor || "result")
     readonly property var dockOrder: ["tools", "properties", "tasks"]
     property bool layoutReady: false
@@ -890,14 +890,16 @@ Item {
                 id: manualSubtitleTimeline
                 SplitView.fillWidth: true
                 SplitView.preferredHeight: Math.min(
-                    Math.round(root.height * 0.55),
-                    manualSubtitleTimeline.trackCanvasHeight + 6
+                    Math.min(root.timelineDesiredHeight, Math.round(root.height * 0.38)),
+                    manualSubtitleTimeline.trackCanvasHeight + 2
                 )
-                SplitView.minimumHeight: 180
-                SplitView.maximumHeight: Math.max(380, Math.round(root.height * 0.75))
+                SplitView.minimumHeight: 120
+                SplitView.maximumHeight: Math.max(260, Math.round(root.height * 0.55))
                 onHeightChanged: {
-                    if (root.layoutReady)
+                    if (root.layoutReady) {
+                        root.timelineDesiredHeight = Math.round(manualSubtitleTimeline.height);
                         layoutSaveTimer.restart();
+                    }
                 }
                 segments: root.segments
                 editorTracks: AppController.hasSelectedVideo
@@ -1002,8 +1004,8 @@ Item {
                     if (!pressed)
                         return;
                     const currentY = timelineResizeGrip.mapToItem(root, mouse.x, mouse.y).y;
-                    root.timelineDesiredHeight = Math.max(220, Math.min(
-                        Math.max(400, Math.round(root.height * 0.75)),
+                    root.timelineDesiredHeight = Math.max(120, Math.min(
+                        Math.max(260, Math.round(root.height * 0.55)),
                         Math.round(timelineResizeGrip.dragStartHeight
                             + timelineResizeGrip.dragStartY - currentY)));
                 }

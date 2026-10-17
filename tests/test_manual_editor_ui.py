@@ -204,7 +204,7 @@ def test_voice_and_subtitles_share_one_timeline_lane_without_merging_data():
     timeline = (QML_DIR / "SubtitleTimeline.qml").read_text(encoding="utf-8")
     header = (QML_DIR / "TrackHeader.qml").read_text(encoding="utf-8")
 
-    assert 'y: combinedVoice ? 104 + root.resultTrackOffset : root.trackY(index)' in timeline
+    assert 'y: combinedVoice ? 90 + root.resultTrackOffset : root.trackY(index)' in timeline
     assert 'if (trackId === "voice" || trackId === "result")' in timeline
     assert 'title: qsTr("Phụ đề · Giọng đọc")' in timeline
     assert 'onSecondaryMuteToggled: root.trackStateRequested("voice", "muted", !secondaryMuted)' in timeline
@@ -249,7 +249,7 @@ def test_manual_layout_preferences_are_bounded_and_survive_partial_updates(tmp_p
     desktop_settings.save_settings({"language": "vi"})
     saved = desktop_settings.load_settings()
     assert saved["manual_editor_inspector_width"] == 520
-    assert saved["manual_editor_timeline_height"] == 200
+    assert saved["manual_editor_timeline_height"] == 120
     assert saved["manual_editor_compare"] is True
 
 
@@ -287,12 +287,12 @@ def test_timeline_and_voice_track_and_auto_pipeline_button():
 
     # 1. Timeline fits tightly without bottom dead space
     assert "contentHeight: Math.max(height, root.trackCanvasHeight)" in timeline
-    assert "manualSubtitleTimeline.trackCanvasHeight + 6" in workspace
+    assert "manualSubtitleTimeline.trackCanvasHeight + 2" in workspace
     assert "trackCanvasHeight: trackY(extraTracks.length) + 4" in timeline
 
     # 2. Voice dubbing track enhanced height and vibrant styling
-    assert "height: combinedVoice ? 20 : 32" in timeline
-    assert "height: layerTrack.combinedVoice ? 20 : layerTrack.height - 6" in timeline
+    assert "height: combinedVoice ? 20 : 28" in timeline
+    assert "height: layerTrack.combinedVoice ? 20 : layerTrack.height - 4" in timeline
     assert '#064E3B' in timeline
     assert '#10B981' in timeline
     assert '🎙' in timeline

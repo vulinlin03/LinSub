@@ -105,7 +105,7 @@ Rectangle {
     })
     readonly property real resultTrackOffset: extraTracks.some(function(track) {
         return String(track.track_id || "") === "result";
-    }) ? 36 : 0
+    }) ? 30 : 0
     readonly property real trackCanvasHeight: trackY(extraTracks.length) + 4
 
     color: Theme.codeSurface
@@ -120,14 +120,14 @@ Rectangle {
     function trackY(index) {
         if (index < extraTracks.length
                 && String(extraTracks[index].track_id || "") === "result")
-            return 30;
-        let top = 132 + resultTrackOffset;
+            return 28;
+        let top = 114 + resultTrackOffset;
         for (let trackIndex = 0; trackIndex < index; ++trackIndex) {
             const track = extraTracks[trackIndex];
             const trackId = String(track.track_id || "");
             if (trackId === "voice" || trackId === "result")
                 continue;
-            top += 36;
+            top += 30;
         }
         return top;
     }
@@ -480,7 +480,7 @@ Rectangle {
                     x: timelineFlick.contentX
                     y: 30 + root.resultTrackOffset
                     width: root.trackLeft - 4
-                    height: 40
+                    height: 34
                     z: 8
                     readonly property var track: root.trackById("source-video")
                     title: String(track.name || qsTr("Video nguồn"))
@@ -518,9 +518,9 @@ Rectangle {
                         }
                         ListModel { id: layerClipModel }
                         x: 0
-                        y: combinedVoice ? 104 + root.resultTrackOffset : root.trackY(index)
+                        y: combinedVoice ? 90 + root.resultTrackOffset : root.trackY(index)
                         width: root.trackLeft + root.trackWidth
-                        height: combinedVoice ? 20 : 32
+                        height: combinedVoice ? 20 : 28
                         z: combinedVoice ? 6 : 0
 
                         TrackHeader {
@@ -573,9 +573,9 @@ Rectangle {
                                 property real gesturePointerX: 0
                                 property bool manipulating: false
                                 x: root.trackLeft + previewStartMs / 1000 * root.pixelsPerSecond
-                                y: layerTrack.combinedVoice ? 0 : 3
+                                y: layerTrack.combinedVoice ? 0 : 2
                                 width: Math.max(8, previewDurationMs / 1000 * root.pixelsPerSecond)
-                                height: layerTrack.combinedVoice ? 20 : layerTrack.height - 6
+                                height: layerTrack.combinedVoice ? 20 : layerTrack.height - 4
                                 radius: Theme.radiusTiny
                                 color: String(modelData.kind || "") === "voice"
                                     ? (Boolean(modelData.enabled) ? "#064E3B" : "#1E293B")
@@ -861,7 +861,7 @@ Rectangle {
                     x: root.trackLeft
                     y: 30 + root.resultTrackOffset
                     width: Math.max(8, Math.max(root.sourcePictureEnd, root.duration) * root.pixelsPerSecond)
-                    height: 40
+                    height: 34
                     color: "#18202A"
                     border.width: 1
                     border.color: Theme.divider
@@ -1089,9 +1089,9 @@ Rectangle {
                 TrackHeader {
                     id: subtitleTrackHeader
                     x: timelineFlick.contentX
-                    y: 74 + root.resultTrackOffset
+                    y: 66 + root.resultTrackOffset
                     width: root.trackLeft - 4
-                    height: 54
+                    height: 46
                     z: 8
                     readonly property var track: root.trackById("subtitles")
                     title: qsTr("Phụ đề · Giọng đọc")
@@ -1108,9 +1108,9 @@ Rectangle {
 
                 Rectangle {
                     x: root.trackLeft
-                    y: 74 + root.resultTrackOffset
+                    y: 66 + root.resultTrackOffset
                     width: root.trackWidth
-                    height: 54
+                    height: 46
                     color: Theme.surface
                     border.width: 1
                     border.color: Theme.divider
@@ -1135,9 +1135,9 @@ Rectangle {
                         property bool editingTiming: false
 
                         x: root.trackLeft + previewStart * root.pixelsPerSecond
-                        y: 78 + root.resultTrackOffset
+                        y: 68 + root.resultTrackOffset
                         width: Math.max(8, (previewEnd - previewStart) * root.pixelsPerSecond)
-                        height: 24
+                        height: 20
                         visible: previewEnd >= Math.max(
                             0,
                             (timelineFlick.contentX - root.trackLeft)
