@@ -8,4 +8,5 @@ If Not FSO.FileExists(pythonPath) Then
     pythonPath = "pythonw.exe"
 End If
 
-WshShell.Run """" & pythonPath & """ linsub_desktop.py", 0, False
+scriptPath = currentPath & "\linsub_desktop.py"
+WshShell.Run """" & pythonPath & """ """ & scriptPath & """", 0, False
