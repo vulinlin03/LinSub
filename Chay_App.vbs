@@ -1,4 +1,11 @@
 Set WshShell = CreateObject("WScript.Shell")
-currentPath = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
+Set FSO = CreateObject("Scripting.FileSystemObject")
+currentPath = FSO.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = currentPath
-WshShell.Run "pythonw.exe linsub_desktop.py", 0, False
+
+pythonPath = "C:\Python314\pythonw.exe"
+If Not FSO.FileExists(pythonPath) Then
+    pythonPath = "pythonw.exe"
+End If
+
+WshShell.Run """" & pythonPath & """ linsub_desktop.py", 0, False
