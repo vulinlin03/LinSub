@@ -18,6 +18,15 @@ QML_DIR = ROOT / "src" / "linsub" / "desktop" / "qml"
 
 class UiFoundationTests(unittest.TestCase):
     @staticmethod
+    def _test_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+        env = os.environ.copy()
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+        if extra:
+            env.update(extra)
+        return env
+
+    @staticmethod
     def _contrast_ratio(first: str, second: str) -> float:
         def luminance(value: str) -> float:
             channels = [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
@@ -53,6 +62,7 @@ assert QCoreApplication.translate('AppUpdatePopup', 'Có phiên bản mới.') =
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=ROOT,
+            env=self._test_environment(),
             capture_output=True,
             text=True,
             timeout=15,
@@ -107,12 +117,10 @@ for width, height in ((1120, 720), (1440, 900), (1920, 1080), (2560, 1440)):
     gallery.deleteLater()
     app.processEvents()
 """
-        environment = os.environ.copy()
-        environment["QT_QPA_PLATFORM"] = "offscreen"
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=ROOT,
-            env=environment,
+            env=self._test_environment(),
             capture_output=True,
             text=True,
             timeout=30,
@@ -146,10 +154,8 @@ for name in ('AutoWatermarkPreviewDialog.qml', 'SubtitlePreviewDialog.qml',
     component = QQmlComponent(engine, QUrl.fromLocalFile(r'{QML_DIR}' + '/' + name))
     assert component.isReady(), name + ': ' + '\\n'.join(error.toString() for error in component.errors())
 """
-        environment = os.environ.copy()
-        environment["QT_QPA_PLATFORM"] = "offscreen"
         result = subprocess.run(
-            [sys.executable, "-c", script], cwd=ROOT, env=environment,
+            [sys.executable, "-c", script], cwd=ROOT, env=self._test_environment(),
             capture_output=True, text=True, timeout=20, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -213,13 +219,10 @@ for width, height in ((1120, 720), (1440, 900), (1920, 1080), (2560, 1440)):
 view.close()
 """
         for scale in ("1", "1.25", "1.5", "1.75"):
-            environment = os.environ.copy()
-            environment["QT_QPA_PLATFORM"] = "offscreen"
-            environment["QT_SCALE_FACTOR"] = scale
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 cwd=ROOT,
-                env=environment,
+                env=self._test_environment({"QT_SCALE_FACTOR": scale}),
                 capture_output=True,
                 text=True,
                 timeout=45,
@@ -399,12 +402,10 @@ assert footer.mapToScene(QPointF(0, float(footer.property("height")))).y() <= di
 assert button.mapToScene(QPointF(0, float(button.property("height")))).y() <= dialog_bottom + 0.5
 window.close()
 """
-        environment = os.environ.copy()
-        environment["QT_QPA_PLATFORM"] = "offscreen"
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=ROOT,
-            env=environment,
+            env=self._test_environment(),
             capture_output=True,
             text=True,
             timeout=20,
@@ -655,12 +656,10 @@ window.close()
 window.deleteLater()
 app.processEvents()
 """
-        environment = os.environ.copy()
-        environment["QT_QPA_PLATFORM"] = "offscreen"
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=ROOT,
-            env=environment,
+            env=self._test_environment(),
             capture_output=True,
             text=True,
             timeout=30,
@@ -732,6 +731,7 @@ app.processEvents()
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=ROOT,
+            env=self._test_environment(),
             capture_output=True,
             text=True,
             timeout=20,
@@ -829,6 +829,7 @@ app.processEvents()
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=ROOT,
+            env=self._test_environment(),
             capture_output=True,
             text=True,
             timeout=20,
@@ -919,12 +920,10 @@ window.deleteLater()
 engine.deleteLater()
 app.processEvents()
 """
-        environment = os.environ.copy()
-        environment["QT_QPA_PLATFORM"] = "offscreen"
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=ROOT,
-            env=environment,
+            env=self._test_environment(),
             capture_output=True,
             text=True,
             timeout=20,
