@@ -431,9 +431,14 @@ def _voice_clip_signatures(video, segments: list[dict[str, Any]]) -> list[str]:
         from linsub.pipeline.edge_tts_backend import EDGE_CACHE_VERSION
         from linsub.pipeline.tts_quality import voice_text_policy_versions
         from linsub.core.vieneu_assets import CACHE_VERSION as VIENEU_CACHE_VERSION
+        next_text = str(segments[index].get("text") or "") if index < len(segments) else ""
+        from linsub.pipeline.tts import is_clause_continuation
         signatures.append(
             manual_artifacts.signature(
-                preprocess_text_for_tts(str(segment.get("text") or "")),
+                preprocess_text_for_tts(
+                    str(segment.get("text") or ""),
+                    is_clause_continuation=is_clause_continuation(str(segment.get("text") or ""), next_text),
+                ),
                 provider,
                 resolve_tts_provider(provider, language),
                 language,

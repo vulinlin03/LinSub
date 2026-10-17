@@ -42,7 +42,28 @@ def voice_selection_identity(voice: str, speaker_mode: str) -> str:
     return "per-speaker" if speaker_mode == "multiple" else str(voice or "")
 
 
-def preprocess_text_for_tts(text: str) -> str:
+def is_clause_continuation(text: str, next_text: str = "") -> bool:
+    """Detect whether a subtitle segment is an open clause continuing into the next segment."""
+    if not text:
+        return False
+    text_clean = text.strip()
+    if not text_clean or text_clean[-1] in ".!?…;:。！？；：":
+        return False
+    if not next_text:
+        return False
+    next_clean = next_text.strip()
+    if not next_clean:
+        return False
+    if next_clean[0].islower():
+        return True
+    last_word = text_clean.split()[-1].lower() if text_clean else ""
+    if last_word in {"rằng", "là", "nếu", "vì", "nhưng", "để", "mà", "hoặc"}:
+        return True
+    return False
+
+
+
+def preprocess_text_for_tts(text: str, *, is_clause_continuation: bool = False) -> str:
     """Normalize invisible and punctuation characters without changing words."""
     if not text:
         return ""
@@ -55,9 +76,23 @@ def preprocess_text_for_tts(text: str) -> str:
     )
     text = " ".join(text.split())
     text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+
+    # Insert natural breath pauses before clause conjunctions in longer phrases
+    text = re.sub(
+        r'(?<=[^\s,;:!?]{2})\s+(nhưng|tuy nhiên|bởi vì|vì thế|vì vậy|cho nên|mặc dù|trong khi|do đó)\b',
+        r', \1',
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+
     if text and text[-1] not in ".!?,;:。！？；：":
-        text += "."
+        if is_clause_continuation:
+            text += ","
+        else:
+            text += "."
     return text
+
 
 
 def _remove_file(path: str) -> None:
@@ -263,11 +298,17 @@ def generate_voice_parts(
         log_to_video(video_id, "[TTS][SESSION_START] provider=edge backend=online concurrency=2 adaptive=true")
 
         def requests():
-            for index, segment in requested_segments:
+            for idx, (index, segment) in enumerate(requested_segments):
                 text = str((segment or {}).get("text") or "").strip() if isinstance(segment, dict) else ""
                 if not text:
                     raise RuntimeError(f"Translated subtitle segment {index} is missing text.")
-                yield preprocess_text_for_tts(text), os.path.join(voice_parts_dir, f"voice_{index:04d}.mp3")
+                next_text = ""
+                if idx + 1 < len(requested_segments):
+                    next_text = str((requested_segments[idx + 1][1] or {}).get("text") or "").strip()
+                elif index < len(segments):
+                    next_text = str((segments[index] or {}).get("text") or "").strip()
+                is_cont = is_clause_continuation(text, next_text)
+                yield preprocess_text_for_tts(text, is_clause_continuation=is_cont), os.path.join(voice_parts_dir, f"voice_{index:04d}.mp3")
 
         def report_completed(completed):
             if status_callback:
@@ -468,8 +509,15 @@ def generate_voice_parts(
                                  f"voice={utterance['voice']} speaker={utterance['speaker_id']} "
                                  f"offset_ms={utterance['offset_ms']} duration_ms={utterance['duration_ms']}")
                 piece_path = str(Path(composition_work.name)/f'{index}-{number}.mp3') if len(plan)>1 else part_path
+                if number + 1 < len(plan):
+                    next_text = str(plan[number + 1].get("text") or "").strip()
+                elif index < len(segments):
+                    next_text = str((segments[index] or {}).get("text") or "").strip()
+                else:
+                    next_text = ""
+                is_cont = is_clause_continuation(utterance['text'], next_text)
                 pending.append({
-                    "text": preprocess_text_for_tts(utterance['text']),
+                    "text": preprocess_text_for_tts(utterance['text'], is_clause_continuation=is_cont),
                     "voice": str(utterance['voice']),
                     "output_path": piece_path,
                     "index": str(index),

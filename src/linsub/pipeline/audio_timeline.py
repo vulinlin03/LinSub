@@ -187,6 +187,81 @@ def _segment_slot_end_ms(
         fallback_end_ms -= _FINAL_AUDIO_TAIL_MARGIN_MS
     return fallback_end_ms
 
+
+def calculate_speech_fitting_window(
+    start_ms: int,
+    segment_end_ms: int,
+    next_start_ms: int,
+    video_dur_ms: int,
+    tts_dur_ms: int,
+    *,
+    is_last: bool = False,
+) -> tuple[int, float]:
+    """Calculate the natural speech placement window and optimal pitch-preserving tempo.
+
+    In human dubbing:
+    1. Speech is not artificially accelerated when there is natural silence
+       between dialogue turns. A gentle natural tail into the following pause (up to 400-500ms)
+       is visually imperceptible and preserves natural speech cadence.
+    2. Overlaps with subsequent speakers are strictly prevented by reserving a safety buffer.
+    3. Severe compression (>1.28x) is avoided to eliminate robotic/chipmunk distortions.
+    4. Very short utterances in extended dialogue slots receive mild, natural relaxation (0.93-0.95x).
+    """
+    video_dur_ms = max(0, int(video_dur_ms))
+    start_ms = max(0, int(start_ms))
+    tts_dur_ms = max(1, int(tts_dur_ms))
+
+    # Base source duration
+    source_end = segment_end_ms if segment_end_ms > start_ms else next_start_ms
+    source_dur = max(1, source_end - start_ms)
+
+    # Absolute ceiling before next dialogue or end of video
+    hard_limit = video_dur_ms
+    if is_last and hard_limit - start_ms > _FINAL_AUDIO_TAIL_MARGIN_MS * 2:
+        hard_limit -= _FINAL_AUDIO_TAIL_MARGIN_MS
+    if next_start_ms > start_ms:
+        hard_limit = min(hard_limit, next_start_ms)
+
+    safety_margin_ms = 70  # Clean breath gap before next speaker begins
+    max_room = max(1, hard_limit - start_ms - safety_margin_ms)
+
+    # Case 1: Audio fits within the actor's original spoken window
+    if tts_dur_ms <= source_dur:
+        # If line is extremely short compared to actor's window (> 2.0s slot),
+        # apply subtle, natural pacing relaxation so it doesn't abruptly stop
+        if tts_dur_ms < source_dur * 0.60 and source_dur >= 2000:
+            target_dur = min(source_dur, int(tts_dur_ms / 0.94))
+            return target_dur, tts_dur_ms / target_dur
+        return tts_dur_ms, 1.0
+
+    # Case 2: Audio overruns source speech window
+    gap_after = max(0, hard_limit - source_end)
+    # Allow natural lip-sync tail into the idle pause following the line
+    natural_tail = min(500, max(200, int(source_dur * 0.35)))
+    comfortable_dur = min(max_room, source_dur + min(gap_after, natural_tail))
+
+    # If it fits within the comfortable natural-tail window, play without compression!
+    if tts_dur_ms <= comfortable_dur:
+        return tts_dur_ms, 1.0
+
+    # Case 3: Needs tempo adjustment to avoid colliding with next line
+    ideal_speed = tts_dur_ms / max(1, comfortable_dur)
+    if ideal_speed > 1.25 and max_room > comfortable_dur:
+        # Utilize more of the idle gap before next speaker to avoid high compression
+        expanded_target = min(max_room, int(tts_dur_ms / 1.22))
+        target_dur = max(comfortable_dur, expanded_target)
+    else:
+        target_dur = comfortable_dur
+
+    speed = tts_dur_ms / max(1, target_dur)
+    # Cap speed factor at 1.28x max to preserve natural human articulation
+    if speed > 1.28 and max_room > target_dur:
+        target_dur = min(max_room, int(tts_dur_ms / 1.28))
+        speed = tts_dur_ms / max(1, target_dur)
+
+    return target_dur, speed
+
+
 def trim_silence(audio: AudioSegment, silence_threshold_db: float = -50.0) -> AudioSegment:
     """Trims leading and trailing silence from an AudioSegment to remove delay and trailing padding."""
     start_trim = 0
@@ -582,16 +657,28 @@ def build_audio_timeline(
             tts_segment = _apply_volume(tts_segment, clip_volume, "TTS", video_id)
             tts_dur = len(tts_segment)
             
-            # Fit speech with FFmpeg's pitch-preserving atempo filter. Unlike
-            # slicing an AudioSegment, this keeps the end of every spoken line.
-            if tts_dur > available_dur:
-                speed_factor = tts_dur / available_dur
+            # Fit speech using human-dialogue pacing with pitch-preserving tempo
+            target_dur, speed_factor = calculate_speech_fitting_window(
+                start_ms,
+                segment_end_ms,
+                next_start_ms,
+                video_dur_ms,
+                tts_dur,
+                is_last=idx == total,
+            )
+            if abs(speed_factor - 1.0) > 0.02 or tts_dur > target_dur:
                 log_to_video(
                     video_id,
-                    f"[{idx}/{total}] TTS overran its {available_dur}ms source-speech window. "
+                    f"[{idx}/{total}] Fitting TTS to {target_dur}ms natural speech window. "
                     f"Applying pitch-preserving tempo {speed_factor:.2f}x without trimming.",
                 )
-                tts_segment = compress_to_fit(tts_segment, available_dur, voice_parts_dir, cancellation_id)
+                tts_segment = fit_tempo_to_duration(
+                    tts_segment,
+                    target_dur,
+                    voice_parts_dir,
+                    cancellation_id,
+                    allow_slowdown=(speed_factor < 0.99),
+                )
 
             tts_segment = _fade_clip(
                 tts_segment,

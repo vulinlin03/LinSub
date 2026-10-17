@@ -364,13 +364,13 @@ class ManualPreviewAudioController(QObject):
         self._position_seconds = value
         self.positionChanged.emit()
 
-    def _decode(self, path, duration=None, fit=False, generation=None):
+    def _decode(self, path, duration=None, fit=False, generation=None, *, start=None, end=None, next_start=None, video_end=None):
         generation = self._generation if generation is None else generation
         if self._closed or generation != self._generation:
             raise CancelledError()
         path = Path(path)
         stat = path.stat()
-        key = (str(path), stat.st_size, stat.st_mtime_ns, duration, fit)
+        key = (str(path), stat.st_size, stat.st_mtime_ns, duration, fit, start, next_start)
         with self._cache_lock:
             if self._closed or generation != self._generation:
                 raise CancelledError()
@@ -379,7 +379,7 @@ class ManualPreviewAudioController(QObject):
                 return self._cache[key]
         cache_path = None
         if self._pcm_cache_directory is not None:
-            digest = hashlib.sha256(json.dumps((key, "pcm-stereo-48k-fit-v1"), default=str).encode()).hexdigest()
+            digest = hashlib.sha256(json.dumps((key, "pcm-stereo-48k-fit-v2"), default=str).encode()).hexdigest()
             cache_path = self._pcm_cache_directory / f"{digest}.pcm"
             if cache_path.is_file() and cache_path.stat().st_size > 0 and cache_path.stat().st_size % 4 == 0:
                 samples = self._map_pcm(cache_path, persistent=True)
@@ -392,20 +392,23 @@ class ManualPreviewAudioController(QObject):
         command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(path), "-vn"]
         if duration is not None:
             try:
-                from linsub.pipeline.audio_timeline import _atempo_filters, trim_silence
+                from linsub.pipeline.audio_timeline import _atempo_filters, calculate_speech_fitting_window, trim_silence
                 from linsub.utils.audio import AudioSegment
                 audio = trim_silence(AudioSegment.from_file(path))
-                # Match export: compress only an overrun. A shorter narration must
-                # end naturally and leave the remainder of its slot silent.
-                from linsub.pipeline.speech_timing import fitted_speech_duration_ms
+                if start is not None and next_start is not None:
+                    target, speed = calculate_speech_fitting_window(
+                        start, end or (start + duration), next_start, video_end or (start + duration), len(audio)
+                    )
+                else:
+                    from linsub.pipeline.speech_timing import fitted_speech_duration_ms
 
-                target = max(1, fitted_speech_duration_ms(len(audio), duration))
-                speed = len(audio) / target
+                    target = max(1, fitted_speech_duration_ms(len(audio), duration))
+                    speed = len(audio) / target
                 with tempfile.TemporaryDirectory(prefix="linsub-preview-voice-", dir=TMP_DIR) as work:
                     source = Path(work) / "voice.wav"
                     audio.export(source, format="wav").close()
                     command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(source)]
-                    if len(audio) > duration:
+                    if abs(speed - 1.0) > 0.02 or len(audio) > target:
                         command += ["-af", _atempo_filters(speed)]
                     command += ["-t", str(target / 1000), "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"]
                     samples = self._decode_to_pcm(command, generation, cache_path)
@@ -753,15 +756,20 @@ class ManualPreviewAudioController(QObject):
                     if duration <= 0:
                         continue
                     baseline = max(1, int(video.tts_volume or 100))
+                    samples = self._decode(
+                        clip_path, duration,
+                        bool(segment.get("fit_voice_to_timing")),
+                        generation=generation,
+                        start=start, end=end, next_start=next_start, video_end=video_end,
+                    )
                     tracks.append({"id": str(segment.get("segment_id", index)), "kind": "voice",
                         "text": str(segment.get("text", "")), "signature": signature,
                         "start": start * RATE // 1000,
                         "gain": (voice_clip.volume_percent / baseline) if voice_clip else 1.0,
-                        "duration_frames": duration * RATE // 1000,
+                        "duration_frames": len(samples),
                         "fade_in_frames": int((voice_clip.fade_in_ms if voice_clip else 0) * RATE / 1000),
                         "fade_out_frames": int((voice_clip.fade_out_ms if voice_clip else 0) * RATE / 1000),
-                        "samples": self._decode(clip_path, duration,
-                                                bool(segment.get("fit_voice_to_timing")), generation=generation)})
+                        "samples": samples})
                     self._progress_ready.emit((generation, .15 + .8 * (index + 1) / max(1, len(segments))))
                 if document and document.audio_ducking_enabled:
                     voice_ranges = [

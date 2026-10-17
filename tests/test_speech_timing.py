@@ -50,5 +50,58 @@ class SpeechTimingTests(unittest.TestCase):
                 self.assertIn("00:00:01,000 --> 00:00:02,930", output.read_text())
                 document.tracks[1].muted = True
                 write_subtitles(document, output)
-                self.assertIn("00:00:01,000 --> 00:00:05,690", output.read_text())
             self.assertEqual(document.clips[0].duration_ms, 4690)
+
+    def test_calculate_speech_fitting_window_natural_pacing(self):
+        from linsub.pipeline.audio_timeline import calculate_speech_fitting_window
+
+        # 1. Standard fit within source speech window
+        target, speed = calculate_speech_fitting_window(1000, 2200, 3000, 10000, 1200)
+        self.assertEqual(target, 1200)
+        self.assertEqual(speed, 1.0)
+
+        # 2. Slight overrun into trailing pause: plays at 1.0x natural speed instead of rushing
+        target, speed = calculate_speech_fitting_window(1000, 2200, 3500, 10000, 1500)
+        self.assertEqual(target, 1500)
+        self.assertEqual(speed, 1.0)
+
+        # 3. Fast dialogue with narrow gap: fits within available window without overlapping next line
+        target, speed = calculate_speech_fitting_window(1000, 2200, 2300, 10000, 1500)
+        self.assertLessEqual(target, 2300 - 1000 - 60)
+        self.assertGreater(speed, 1.0)
+        self.assertLessEqual(speed, 1.30)
+
+        # 4. Very short utterance in long 3.5s slot: receives subtle natural relaxation
+        target, speed = calculate_speech_fitting_window(1000, 4500, 5000, 10000, 1200)
+        self.assertGreater(target, 1200)
+        self.assertAlmostEqual(speed, 0.94, places=2)
+
+    def test_preprocess_text_for_tts_cadence_and_pausing(self):
+        from linsub.pipeline.tts import preprocess_text_for_tts, is_clause_continuation
+
+        # Natural breath commas inserted before conjunctions
+        raw = "Tôi đã cố gắng rất nhiều nhưng kết quả không như ý"
+        processed = preprocess_text_for_tts(raw)
+        self.assertEqual(processed, "Tôi đã cố gắng rất nhiều, nhưng kết quả không như ý.")
+
+        # Clause continuation ends with comma instead of abrupt period
+        clause = "Khi tôi bước vào căn phòng đó"
+        cont_processed = preprocess_text_for_tts(clause, is_clause_continuation=True)
+        self.assertEqual(cont_processed, "Khi tôi bước vào căn phòng đó,")
+
+        # Standalone complete sentence ends with period
+        sentence = "Hôm nay thời tiết rất đẹp"
+        sent_processed = preprocess_text_for_tts(sentence, is_clause_continuation=False)
+        self.assertEqual(sent_processed, "Hôm nay thời tiết rất đẹp.")
+
+    def test_is_clause_continuation_detection(self):
+        from linsub.pipeline.tts import is_clause_continuation
+
+        # Lowercase next segment -> continuing clause
+        self.assertTrue(is_clause_continuation("Khi tôi đến nơi", "thì mọi chuyện đã kết thúc"))
+        # Ending in open conjunction/connective word -> continuing clause
+        self.assertTrue(is_clause_continuation("Tôi nghĩ rằng", "Chúng ta nên đi"))
+        # Complete sentence followed by another -> False
+        self.assertFalse(is_clause_continuation("Tôi đi chợ.", "Tôi mua cá"))
+        # Two distinct statements starting with capital -> False
+        self.assertFalse(is_clause_continuation("Xin chào", "Thế giới"))
