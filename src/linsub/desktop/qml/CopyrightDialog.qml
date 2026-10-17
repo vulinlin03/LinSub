@@ -54,7 +54,7 @@ AppDialog {
             AboutLinkRow {
                 label: qsTr("Giấy phép")
                 value: "LinSub Source-Available 1.0"
-                destination: "https://github.com/linsub/linsub/blob/main/LICENSE"
+                destination: "https://github.com/vulinlin03/LinSub/blob/main/LICENSE"
                 copyValue: destination
             }
             Rectangle {
@@ -75,7 +75,7 @@ AppDialog {
             AboutLinkRow {
                 label: qsTr("Thành phần")
                 value: qsTr("Giấy phép và thông báo")
-                destination: "https://github.com/linsub/linsub/blob/main/THIRD_PARTY_NOTICES.md"
+                destination: "https://github.com/vulinlin03/LinSub/blob/main/THIRD_PARTY_NOTICES.md"
                 copyValue: destination
             }
         }

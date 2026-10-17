@@ -47,12 +47,12 @@ AppSurface {
 
         ExternalTextLink {
             text: "GitHub"
-            destination: "https://github.com/linsub/linsub"
+            destination: "https://github.com/vulinlin03/LinSub"
         }
 
         ExternalTextLink {
             text: qsTr("Hướng dẫn")
-            destination: "https://github.com/linsub/linsub#readme"
+            destination: "https://github.com/vulinlin03/LinSub#readme"
         }
     }
 }

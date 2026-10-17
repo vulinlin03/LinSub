@@ -336,14 +336,14 @@ Rectangle {
             id: guideItem
 
             text: qsTr("Hướng dẫn sử dụng")
-            onTriggered: AppController.openExternalUrl("https://github.com/linsub/linsub/blob/main/docs/user-guide.vi.md")
+            onTriggered: AppController.openExternalUrl("https://github.com/vulinlin03/LinSub/blob/main/docs/user-guide.vi.md")
         }
 
         AppMenuItem {
             id: reportIssueItem
 
             text: qsTr("Báo lỗi")
-            onTriggered: AppController.openExternalUrl("https://github.com/linsub/linsub/issues/new")
+            onTriggered: AppController.openExternalUrl("https://github.com/vulinlin03/LinSub/issues/new")
         }
 
         MenuSeparator {}

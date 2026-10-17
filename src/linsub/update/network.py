@@ -13,18 +13,21 @@ from urllib.parse import urlparse
 from .filesystem import UpdateError, child, no_links, version
 from .manifest import Manifest
 
-API = "https://api.github.com/repos/LinSub/LinSub/releases/latest"
-REPOSITORY = "https://github.com/linsub/linsub"
+API = "https://api.github.com/repos/vulinlin03/LinSub/releases/latest"
+REPOSITORY = "https://github.com/vulinlin03/LinSub"
 CDN_HOSTS = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 
 
 def allowed_url(url: str, *, api: bool = False) -> None:
     parsed = urlparse(url)
     if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in {None, 443}
-            or parsed.fragment or (api and url != API)):
+            or parsed.fragment or (api and url.lower() not in {API.lower(), "https://api.github.com/repos/linsub/linsub/releases/latest"})):
         raise UpdateError("Nguồn tải cập nhật không được phép.")
     if not api and not (parsed.hostname in CDN_HOSTS or (
-            parsed.hostname == "github.com" and parsed.path.startswith("/LinSub/LinSub/releases/download/"))):
+            parsed.hostname == "github.com" and (
+                parsed.path.lower().startswith("/vulinlin03/linsub/releases/download/")
+                or parsed.path.lower().startswith("/linsub/linsub/releases/download/")
+            ))):
         raise UpdateError("Nguồn tải cập nhật không được phép.")
 
 
@@ -46,7 +49,7 @@ class GitHubClient:
         request = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json",
             "User-Agent": "LinSub-CoreUpdater/1", "X-GitHub-Api-Version": "2026-03-10"})
         with self.opener(request, timeout=15) as response:
-            if response.geturl() != API:
+            if response.geturl().lower() not in {API.lower(), "https://api.github.com/repos/linsub/linsub/releases/latest"}:
                 raise UpdateError("GitHub API trả về nguồn không được phép.")
             raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
@@ -58,7 +61,8 @@ class GitHubClient:
         if not isinstance(tag, str) or not tag.startswith("v"):
             raise UpdateError("Release tag không hợp lệ.")
         version(tag[1:])
-        if data.get("html_url") != f"{REPOSITORY}/releases/tag/{tag}" or not isinstance(data.get("assets"), list):
+        valid_release_urls = {f"{REPOSITORY}/releases/tag/{tag}".lower(), f"https://github.com/linsub/linsub/releases/tag/{tag}".lower()}
+        if str(data.get("html_url") or "").lower() not in valid_release_urls or not isinstance(data.get("assets"), list):
             raise UpdateError("Release không thuộc repository chính thức.")
         return data
 
@@ -67,12 +71,16 @@ class GitHubClient:
         if len(candidates) != 1:
             raise UpdateError("Bản phát hành thiếu hoặc trùng asset cập nhật.")
         entry = candidates[0]
-        expected_url = f"{REPOSITORY}/releases/download/{release['tag_name']}/{name}"
-        if (entry.get("browser_download_url") != expected_url or type(entry.get("size")) is not int
+        expected_urls = {
+            f"{REPOSITORY}/releases/download/{release['tag_name']}/{name}".lower(),
+            f"https://github.com/linsub/linsub/releases/download/{release['tag_name']}/{name}".lower(),
+        }
+        browser_url = str(entry.get("browser_download_url") or "").lower()
+        if (browser_url not in expected_urls or type(entry.get("size")) is not int
                 or not 0 < entry["size"] <= maximum or entry.get("state") != "uploaded"
                 or not re.fullmatch(r"sha256:[a-fA-F0-9]{64}", str(entry.get("digest")))):
             raise UpdateError("Asset không có metadata toàn vẹn hợp lệ.")
-        return {"name": name, "size": entry["size"], "sha256": entry["digest"][7:].lower(), "url": expected_url}
+        return {"name": name, "size": entry["size"], "sha256": entry["digest"][7:].lower(), "url": entry.get("browser_download_url")}
 
     def download(self, asset: dict, directory: Path, *, progress=lambda *_: None) -> Path:
         allowed_url(asset["url"])

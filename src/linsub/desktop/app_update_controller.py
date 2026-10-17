@@ -21,10 +21,14 @@ from PySide6.QtCore import QObject, Signal
 
 from linsub import __version__
 
-LATEST_RELEASE_API = "https://api.github.com/repos/LinSub/LinSub/releases/latest"
-RELEASES_URL = "https://github.com/linsub/linsub/releases"
-_RELEASE_URL_PREFIX = "https://github.com/linsub/linsub/releases/"
+LATEST_RELEASE_API = "https://api.github.com/repos/vulinlin03/LinSub/releases/latest"
+RELEASES_URL = "https://github.com/vulinlin03/LinSub/releases"
+_RELEASE_URL_PREFIX = "https://github.com/vulinlin03/LinSub/releases/"
 _DOWNLOAD_URL_PREFIX = _RELEASE_URL_PREFIX + "download/"
+_DOWNLOAD_URL_PREFIXES = (
+    _DOWNLOAD_URL_PREFIX,
+    "https://github.com/linsub/linsub/releases/download/",
+)
 
 
 def installer_asset(payload: dict, version: str) -> dict:
@@ -38,7 +42,7 @@ def installer_asset(payload: dict, version: str) -> dict:
         url = str(asset.get("browser_download_url") or "")
         digest = str(asset.get("digest") or "")
         size = asset.get("size")
-        if (url != f"{_DOWNLOAD_URL_PREFIX}{tag}/{name}"
+        if (not any(url.lower() == f"{prefix.lower()}{tag.lower()}/{name.lower()}" for prefix in _DOWNLOAD_URL_PREFIXES)
                 or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)
                 or not isinstance(size, int) or not 0 < size <= 2 * 1024**3):
             continue
@@ -391,7 +395,7 @@ class AppUpdateController(QObject):
                     raise ValueError("Invalid release metadata.")
                 tag = str(payload.get("tag_name") or "").strip()
                 url = str(payload.get("html_url") or "").strip()
-                if not url.startswith(_RELEASE_URL_PREFIX):
+                if not any(url.lower().startswith(prefix.lower()) for prefix in (_RELEASE_URL_PREFIX, "https://github.com/linsub/linsub/releases/")):
                     raise ValueError("GitHub returned an unexpected release address.")
                 available = version_key(tag) > version_key(self.current_version)
                 self._events.put(
