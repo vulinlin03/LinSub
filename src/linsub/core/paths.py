@@ -83,12 +83,14 @@ def core_root() -> Path:
 def engine_environment() -> dict[str, str]:
     """Give child engines the actual Core installation, not machine overrides."""
     environment = os.environ.copy()
+    root = install_root()
+    environment["LINSUB_ENGINE_APP_ROOT"] = str(root)
+    environment["HAIZFLOW_ENGINE_APP_ROOT"] = str(root)
     if is_frozen() and not runtime_overrides_allowed():
-        root = install_root()
         for name in ("LINSUB_HOME", "APP_DATA_DIR", "RUNTIME_DATA_DIR", "MODELS_DIR",
-                     "LINSUB_INSTALL_ROOT", "LINSUB_RESOURCE_ROOT", "LINSUB_SMOKE_TEST"):
+                     "LINSUB_INSTALL_ROOT", "LINSUB_RESOURCE_ROOT", "LINSUB_SMOKE_TEST",
+                     "HAIZFLOW_HOME", "HAIZFLOW_INSTALL_ROOT", "HAIZFLOW_RESOURCE_ROOT", "HAIZFLOW_SMOKE_TEST"):
             environment.pop(name, None)
-        environment["LINSUB_ENGINE_APP_ROOT"] = str(root)
     return environment
 
 
