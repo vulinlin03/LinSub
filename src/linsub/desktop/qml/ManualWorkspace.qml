@@ -676,6 +676,12 @@ Item {
                 comparePreview.seekTo(Math.max(0, Math.min(comparePreview.durationSeconds,
                     comparePreview.positionSeconds + offset)));
             }
+            onAutoAllRequested: {
+                if (AppController.isSelectedVideoProcessing || AppController.isSelectedVideoQueued)
+                    return;
+                stageInspector.saveNow();
+                AppController.runAutoManualPipeline();
+            }
             onExportRequested: {
                 if (!manualEditorToolbar.exportEnabled)
                     return;
@@ -883,12 +889,12 @@ Item {
             SubtitleTimeline {
                 id: manualSubtitleTimeline
                 SplitView.fillWidth: true
-                SplitView.preferredHeight: Math.max(
-                    manualSubtitleTimeline.trackCanvasHeight + 20,
-                    Math.max(260, Math.min(Math.round(root.height * 0.6), root.timelineDesiredHeight))
+                SplitView.preferredHeight: Math.min(
+                    Math.round(root.height * 0.55),
+                    manualSubtitleTimeline.trackCanvasHeight + 6
                 )
-                SplitView.minimumHeight: 220
-                SplitView.maximumHeight: Math.max(400, Math.round(root.height * 0.75))
+                SplitView.minimumHeight: 180
+                SplitView.maximumHeight: Math.max(380, Math.round(root.height * 0.75))
                 onHeightChanged: {
                     if (root.layoutReady)
                         layoutSaveTimer.restart();
@@ -1042,6 +1048,12 @@ Item {
             root.selectedStageIndex = index;
             root.warmTool(index);
             root.activatePanel("tasks", "right");
+        }
+        onAutoAllTriggered: {
+            if (AppController.isSelectedVideoProcessing || AppController.isSelectedVideoQueued)
+                return;
+            stageInspector.saveNow();
+            AppController.runAutoManualPipeline();
         }
     }
 

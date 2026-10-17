@@ -106,7 +106,7 @@ Rectangle {
     readonly property real resultTrackOffset: extraTracks.some(function(track) {
         return String(track.track_id || "") === "result";
     }) ? 36 : 0
-    readonly property real trackCanvasHeight: trackY(extraTracks.length) + 8
+    readonly property real trackCanvasHeight: trackY(extraTracks.length) + 4
 
     color: Theme.codeSurface
     radius: 0
@@ -121,7 +121,7 @@ Rectangle {
         if (index < extraTracks.length
                 && String(extraTracks[index].track_id || "") === "result")
             return 30;
-        let top = 128 + resultTrackOffset;
+        let top = 132 + resultTrackOffset;
         for (let trackIndex = 0; trackIndex < index; ++trackIndex) {
             const track = extraTracks[trackIndex];
             const trackId = String(track.track_id || "");
@@ -355,7 +355,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: root.trackLeft + root.trackWidth + 8
-            contentHeight: Math.max(height, root.trackCanvasHeight + 20)
+            contentHeight: Math.max(height, root.trackCanvasHeight)
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             flickableDirection: Flickable.AutoFlickDirection
@@ -520,7 +520,7 @@ Rectangle {
                         x: 0
                         y: combinedVoice ? 104 + root.resultTrackOffset : root.trackY(index)
                         width: root.trackLeft + root.trackWidth
-                        height: combinedVoice ? 16 : 32
+                        height: combinedVoice ? 20 : 32
                         z: combinedVoice ? 6 : 0
 
                         TrackHeader {
@@ -575,22 +575,52 @@ Rectangle {
                                 x: root.trackLeft + previewStartMs / 1000 * root.pixelsPerSecond
                                 y: layerTrack.combinedVoice ? 0 : 3
                                 width: Math.max(8, previewDurationMs / 1000 * root.pixelsPerSecond)
-                                height: layerTrack.combinedVoice ? 16 : layerTrack.height - 6
+                                height: layerTrack.combinedVoice ? 20 : layerTrack.height - 6
                                 radius: Theme.radiusTiny
                                 color: String(modelData.kind || "") === "voice"
-                                    ? Theme.successMuted
+                                    ? (Boolean(modelData.enabled) ? "#064E3B" : "#1E293B")
                                     : String(modelData.kind || "") === "audio"
                                         ? Theme.interactiveMuted : Theme.warningMuted
                                 border.width: selected ? 2 : 1
                                 border.color: selected ? Theme.focus
                                     : String(modelData.kind || "") === "voice"
-                                        ? Theme.success : Theme.interactiveOutline
-                                opacity: Boolean(modelData.enabled) && Boolean(layerTrack.modelData.visible) ? 1 : 0.45
+                                        ? (Boolean(modelData.enabled) ? "#10B981" : "#047857")
+                                        : Theme.interactiveOutline
+                                opacity: Boolean(modelData.enabled) && Boolean(layerTrack.modelData.visible)
+                                    ? 1.0 : (Boolean(layerTrack.modelData.visible) ? 0.75 : 0.35)
 
                                 onModelDataChanged: {
                                     if (!manipulating) {
                                         previewStartMs = Number(modelData.start_ms || 0)
                                         previewDurationMs = Number(modelData.duration_ms || 0)
+                                    }
+                                }
+
+                                RowLayout {
+                                    z: 1
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 4
+                                    anchors.rightMargin: 4
+                                    spacing: 3
+                                    visible: layerTrack.combinedVoice && editorClip.width >= 24
+
+                                    Text {
+                                        text: Boolean(editorClip.modelData.enabled) ? "🎙" : "..."
+                                        color: Boolean(editorClip.modelData.enabled) ? "#34D399" : Theme.textSubtle
+                                        font.pixelSize: 10
+                                        Layout.alignment: Qt.AlignVCenter
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        visible: editorClip.width >= 56
+                                        text: I18n.progressDetail(String(editorClip.modelData.name || ""))
+                                        color: Boolean(editorClip.modelData.enabled) ? "#D1FAE5" : Theme.textSubtle
+                                        font.family: Theme.fontFamily
+                                        font.pixelSize: 9
+                                        elide: Text.ElideRight
+                                        textFormat: Text.PlainText
+                                        Layout.alignment: Qt.AlignVCenter
                                     }
                                 }
 
@@ -621,10 +651,10 @@ Rectangle {
                                     anchors.verticalCenter: parent.verticalCenter
                                     anchors.leftMargin: 3
                                     anchors.rightMargin: 3
-                                    height: parent.height - 8
+                                    height: parent.height - 4
                                     spacing: 1
                                     visible: (editorClip.modelData.waveform || []).length > 0
-                                    opacity: layerTrack.combinedVoice ? 0.8 : 0.42
+                                    opacity: layerTrack.combinedVoice ? 0.75 : 0.42
 
                                     Repeater {
                                         model: waveformRow.barCount
@@ -639,7 +669,7 @@ Rectangle {
                                                     / waveformRow.barCount)] || 0.08))
                                             y: (waveformRow.height - height) / 2
                                             radius: width > 2 ? 1 : 0
-                                            color: layerTrack.combinedVoice ? Theme.success : Theme.text
+                                            color: layerTrack.combinedVoice ? "#34D399" : Theme.text
                                         }
                                     }
                                 }
@@ -1061,7 +1091,7 @@ Rectangle {
                     x: timelineFlick.contentX
                     y: 74 + root.resultTrackOffset
                     width: root.trackLeft - 4
-                    height: 50
+                    height: 54
                     z: 8
                     readonly property var track: root.trackById("subtitles")
                     title: qsTr("Phụ đề · Giọng đọc")
@@ -1080,7 +1110,7 @@ Rectangle {
                     x: root.trackLeft
                     y: 74 + root.resultTrackOffset
                     width: root.trackWidth
-                    height: 50
+                    height: 54
                     color: Theme.surface
                     border.width: 1
                     border.color: Theme.divider

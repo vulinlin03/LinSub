@@ -10,12 +10,19 @@ Item {
 
     property var tools: []
     property int currentIndex: 0
+    property bool autoAllEnabled: true
     signal toolSelected(int index)
+    signal autoAllTriggered()
 
-    ListView {
-        id: toolList
+    ColumnLayout {
         anchors.fill: parent
         anchors.margins: Theme.space8
+        spacing: Theme.space8
+
+        ListView {
+            id: toolList
+            Layout.fillWidth: true
+            Layout.fillHeight: true
         clip: true
         spacing: 2
         model: root.tools
@@ -71,5 +78,20 @@ Item {
             TapHandler { onTapped: root.toolSelected(row.stageIndex) }
         }
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+    }
+
+        StudioButton {
+            id: autoAllBtn
+            Layout.fillWidth: true
+            text: AppController.isSelectedVideoProcessing && AppController.manualTargetTool === "auto_all"
+                ? qsTr("Đang chạy toàn bộ...")
+                : qsTr("Tự động chạy toàn bộ")
+            iconName: "play"
+            variant: "primary"
+            enabled: root.autoAllEnabled && !AppController.isSelectedVideoProcessing && !AppController.isSelectedVideoQueued
+            toolTipText: qsTr("Tự động thực hiện lần lượt từ đầu đến cuối (Tách giọng -> Dịch -> Giọng đọc -> Trộn âm -> Xuất video).")
+            showToolTip: true
+            onClicked: root.autoAllTriggered()
+        }
     }
 }

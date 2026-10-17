@@ -4526,7 +4526,7 @@ class LinSubController(QObject):
         )
 
         tool_id = str(tool_id or "").strip().lower()
-        allowed = {"source", "separation", "translation", "subtitle", "image", "voice", "audio", "export"}
+        allowed = {"source", "separation", "translation", "subtitle", "image", "voice", "audio", "export", "auto_all"}
         video = self._selected_video()
         if not video or self._project_type != "manual" or video.project_type != "manual":
             self.appAlertRequested.emit("Thủ công", "Hãy nhập video vào dự án Thủ công trước.", "warning")
@@ -4550,14 +4550,14 @@ class LinSubController(QObject):
                     self.appAlertRequested.emit(*notice, "warning")
                     return False
         if (
-            tool_id == "translation"
+            tool_id in {"translation", "auto_all"}
             and str(getattr(effective_config, "translation_model", "auto")).startswith("gemini-")
             and not self.geminiKeyConfigured
         ):
             self.requestGeminiSetup()
             return False
         ensure_hardware = getattr(self, "_ensure_hardware_ready_for_action", None)
-        if tool_id in {"translation", "voice", "separation"} and callable(ensure_hardware):
+        if tool_id in {"translation", "voice", "separation", "auto_all"} and callable(ensure_hardware):
             if not ensure_hardware():
                 return False
         capabilities = {
@@ -4565,6 +4565,9 @@ class LinSubController(QObject):
             "translation": ("recognition", "translation"),
             "image": ("ocr",),
             "voice": ("voice",),
+            "auto_all": ("recognition", "translation", "voice") + (
+                ("separation",) if getattr(effective_config, "enable_audio_separation", False) else ()
+            ),
         }.get(tool_id, ())
         from linsub.services.subtitle_import import has_import
 
@@ -4619,10 +4622,10 @@ class LinSubController(QObject):
             title, message = missing_resource_notice(missing, summary, self._settings_language, feature_label)
             self.appAlertRequested.emit(title, message, "info")
             return False
-        if tool_id in {"subtitle", "voice", "audio", "export"}:
+        if tool_id in {"subtitle", "voice", "audio", "export", "auto_all"}:
             ensure_current_subtitle_document(video.video_id, validate=False)
             video = video_store.get_video(video.video_id) or video
-        if tool_id == "export":
+        if tool_id in {"export", "auto_all"}:
             preflight = self.manualExportPreflight()
             blocking = [
                 item for item in preflight.get("issues", [])
@@ -4664,7 +4667,7 @@ class LinSubController(QObject):
                 "info",
             )
             return False
-        aggregate_id = "source" if tool_id == "separation" else tool_id
+        aggregate_id = "source" if tool_id in {"separation", "auto_all"} else tool_id
         state = tool_readiness(video, aggregate_id, language=self._settings_language)
         if state and not state["canRun"]:
             self.appAlertRequested.emit("Chưa thể chạy", state["blockedReason"] or "Thiếu dữ liệu đầu vào.", "info")
@@ -4701,7 +4704,7 @@ class LinSubController(QObject):
 
             clear_manual_progress(video.video_id)
             clear_recognition_progress(video.video_id)
-        if tool_id != "export" or restarting_paused_tool:
+        if tool_id not in {"export", "auto_all"} or restarting_paused_tool:
             if restarting_paused_tool or force_rerun:
                 prepare_manual_rerun(video.video_id, tool_id, force=True)
             else:
@@ -4721,6 +4724,11 @@ class LinSubController(QObject):
             self.selectedVideoChanged.emit()
             self.refreshVideos()
         return queued
+
+    @Slot(result=bool)
+    def runAutoManualPipeline(self) -> bool:
+        """Run all manual pipeline stages sequentially from start to export."""
+        return self.runManualTool("auto_all", force_rerun=False)
 
     @Slot(str, result="QVariantMap")
     def manualVoiceConfiguration(self, segment_id: str):

@@ -149,7 +149,7 @@ class ProcessingLifecycleController:
                 else ""
             )
             requires_model_runtime = not manual_tool or manual_tool in {
-                "separation", "recognition", "translation", "image", "voice"
+                "separation", "recognition", "translation", "image", "voice", "auto_all"
             }
             if requires_model_runtime and not host._initial_model_warmup_done.is_set():
                 video_store.log_to_video(video_id, "Waiting for startup model warm-up to finish.")
@@ -188,6 +188,7 @@ class ProcessingLifecycleController:
                     required = {
                         "separation": {"separation"}, "translation": {"recognition"},
                         "image": {"ocr"}, "voice": {"voice"},
+                        "auto_all": {"recognition", "voice"},
                     }.get(manual_tool, set()) if manual_tool else set(warmup.resident)
                     if manual_tool == "translation":
                         from linsub.pipeline.process_video import foreground_capability

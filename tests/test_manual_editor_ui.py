@@ -277,3 +277,32 @@ def test_manual_workspace_dock_preferences_are_normalized(tmp_path, monkeypatch)
     assert recovered["placements"]["tools"] == "left"
     assert recovered["placements"]["tasks"] == "right"
     assert recovered["monitor"] == "result"
+
+
+def test_timeline_and_voice_track_and_auto_pipeline_button():
+    timeline = (QML_DIR / "SubtitleTimeline.qml").read_text(encoding="utf-8")
+    workspace = (QML_DIR / "ManualWorkspace.qml").read_text(encoding="utf-8")
+    toolbar = (QML_DIR / "ManualEditorToolbar.qml").read_text(encoding="utf-8")
+    navigator = (QML_DIR / "ManualToolNavigator.qml").read_text(encoding="utf-8")
+
+    # 1. Timeline fits tightly without bottom dead space
+    assert "contentHeight: Math.max(height, root.trackCanvasHeight)" in timeline
+    assert "manualSubtitleTimeline.trackCanvasHeight + 6" in workspace
+    assert "trackCanvasHeight: trackY(extraTracks.length) + 4" in timeline
+
+    # 2. Voice dubbing track enhanced height and vibrant styling
+    assert "height: combinedVoice ? 20 : 32" in timeline
+    assert "height: layerTrack.combinedVoice ? 20 : layerTrack.height - 6" in timeline
+    assert '#064E3B' in timeline
+    assert '#10B981' in timeline
+    assert '🎙' in timeline
+
+    # 3. 1-click Auto pipeline button in toolbar and navigator
+    assert 'objectName: "manualAutoAllButton"' in toolbar
+    assert 'qsTr("Tự động chạy toàn bộ")' in toolbar
+    assert 'onAutoAllRequested: {' in workspace
+    assert 'AppController.runAutoManualPipeline();' in workspace
+    assert 'id: autoAllBtn' in navigator
+    assert 'qsTr("Tự động chạy toàn bộ")' in navigator
+    assert 'onAutoAllTriggered: {' in workspace
+

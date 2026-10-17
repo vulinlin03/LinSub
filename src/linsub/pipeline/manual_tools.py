@@ -243,6 +243,7 @@ _TOOL_PROGRESS = {
     "voice": 100,
     "audio": 100,
     "export": 100,
+    "auto_all": 100,
 }
 
 
@@ -2488,6 +2489,54 @@ def _run_export(video, reporter) -> None:
     _update_files(video.video_id, final_video=cached["resolved_outputs"]["video"])
 
 
+def _run_auto_all(video, reporter) -> None:
+    """Run all manual pipeline stages sequentially from start to export using configured settings."""
+    from linsub.pipeline.process_registry import check_cancellation
+
+    if reporter:
+        reporter.update(2, "manual_auto_all", "Bắt đầu quy trình tự động")
+
+    # 1. Separation / Source Audio
+    if bool(getattr(video, "enable_audio_separation", False)):
+        _run_separation(video, reporter)
+    else:
+        _run_source(video, reporter)
+    check_cancellation(video.video_id)
+    video = video_store.get_video(video.video_id) or video
+
+    # 2. Recognition & Translation
+    _run_translation(video, reporter)
+    check_cancellation(video.video_id)
+    video = video_store.get_video(video.video_id) or video
+
+    # 3. Subtitle Document
+    _run_subtitle(video, reporter)
+    check_cancellation(video.video_id)
+    video = video_store.get_video(video.video_id) or video
+
+    # 4. OCR / Image treatment if enabled
+    if bool(getattr(video, "remove_original_subtitles", False)) or bool(getattr(video, "enable_ocr", False)):
+        try:
+            _run_image(video, reporter)
+        except Exception as ocr_err:
+            video_store.log_to_video(video.video_id, f"OCR subtitle removal skipped: {ocr_err}", level="WARNING")
+        check_cancellation(video.video_id)
+        video = video_store.get_video(video.video_id) or video
+
+    # 5. Voice Generation (TTS)
+    _run_voice(video, reporter)
+    check_cancellation(video.video_id)
+    video = video_store.get_video(video.video_id) or video
+
+    # 6. Audio Mix
+    _run_audio(video, reporter)
+    check_cancellation(video.video_id)
+    video = video_store.get_video(video.video_id) or video
+
+    # 7. Final Video Export
+    _run_export(video, reporter)
+
+
 _RUNNERS = {
     "source": _run_source,
     "separation": _run_separation,
@@ -2498,6 +2547,7 @@ _RUNNERS = {
     "voice": _run_voice,
     "audio": _run_audio,
     "export": _run_export,
+    "auto_all": _run_auto_all,
 }
 
 
@@ -2512,6 +2562,7 @@ def _requested_artifact(video, tool_id: str, *, validate: bool = True) -> tuple[
         "voice": "tts_manifest",
         "audio": "audio_mix",
         "export": "export",
+        "auto_all": "export",
     }[tool_id]
     expected = {
         "source": source_signature,
@@ -2523,6 +2574,7 @@ def _requested_artifact(video, tool_id: str, *, validate: bool = True) -> tuple[
         "voice": lambda current: voice_signature(current, validate=validate),
         "audio": lambda current: audio_signature(current, validate=validate),
         "export": lambda current: export_signature(current, validate=validate),
+        "auto_all": lambda current: export_signature(current, validate=validate),
     }[tool_id](video)
     return kind, expected
 
@@ -2544,6 +2596,7 @@ def prepare_manual_rerun(video_id: str, tool_id: str, *, force: bool = False) ->
         "voice": "voice",
         "audio": "audio",
         "export": "export",
+        "auto_all": "export",
     }.get(tool_id)
     if not generation_key:
         return False
@@ -2773,7 +2826,7 @@ def run_manual_tool_sync(video_id: str, tool_id: str) -> None:
 
         check_cancellation(video_id)
         refreshed = video_store.get_video(video_id) or video
-        final = tool_id == "export"
+        final = tool_id in {"export", "auto_all"}
         video_store.update_video(
             video_id,
             status="done" if final else "manual_ready",
