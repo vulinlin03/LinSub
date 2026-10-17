@@ -1,0 +1,1621 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import QtMultimedia
+import "."
+
+Rectangle {
+    id: root
+
+    property var controller: AppController
+    property url inputSource: ""
+    property url resultSource: ""
+    property url resultBaseSource: ""
+    property string resultOutputFormat: "keep_ratio"
+    property string resultThumbnailOutputFormat: resultOutputFormat
+    property url thumbnailSource: ""
+    property bool emptySource: false
+    property bool previewBusy: false
+    property bool audioPreparationBusy: false
+    onAudioPreparationBusyChanged: {
+        if (audioPreparationBusy)
+            pausePlayback();
+    }
+    property real previewProgress: 0
+    property bool inputMuted: true
+    property bool resultMuted: false
+    property real playbackSpeed: 1.0
+    onPlaybackSpeedChanged: {
+        inputClockTickMs = Date.now();
+        if (controller && controller.manualPreviewAudio)
+            controller.manualPreviewAudio.setPlaybackRate(playbackSpeed, positionSeconds);
+    }
+    property bool comparing: false
+    property string activeMonitor: "result"
+    property bool synchronizedPlayback: false
+    property bool fullscreenResult: true
+    property bool inputPriming: false
+    property bool resultPriming: false
+    property bool inputSourceSwitching: false
+    property bool resultSourceSwitching: false
+    property url attachedInputSource: ""
+    property url attachedResultSource: ""
+    property int lastStablePositionMs: 0
+    property int pendingResultPositionMs: 0
+    property bool resultPlaybackRequested: false
+    property bool inputPlaybackRequested: false
+    property real inputClockTickMs: 0
+    property bool subtitleInteractive: false
+    property var ocrRegion: ({})
+    property var ocrLayers: []
+    property var ocrRegionDrafts: ({})
+    property string selectedOcrLayerId: "ocr-source-region"
+    property var ocrSourceFrameInOutput: ({})
+    property bool ocrInteractive: false
+    property bool ocrEditing: false
+    property real previewZoomPercent: 100
+    signal previewZoomRequested(real percent)
+    signal ocrEditingRequested()
+    signal ocrRegionEdited(var region)
+    signal ocrLayerSelected(string clipId)
+    signal ocrLayerRegionEdited(string clipId, var region)
+    signal ocrApplyRequested()
+    signal ocrDiscardRequested()
+    function ocrFramePercent(forResult) {
+        const frame = forResult ? ocrSourceFrameInOutput : ({});
+        return Qt.rect(Number(frame.x_percent || 0), Number(frame.y_percent || 0),
+            Number(frame.width_percent || 100), Number(frame.height_percent || 100));
+    }
+    property bool subtitleEditEnabled: false
+    property bool subtitleLivePreviewEnabled: false
+    property bool suppressResultAudio: false
+    property string subtitleText: ""
+    property var subtitleSprite: ({})
+    property real subtitleKaraokeProgress: 0
+    property int subtitleFontSize: 60
+    property int subtitlePositionXPercent: 50
+    property int subtitlePositionYPercent: 88
+    property int subtitleBoxWidthPercent: 72
+    property int subtitleBoxHeightPercent: 12
+    property int subtitleOutline: 5
+    property int subtitleLayoutWidth: 0
+    property int subtitleLayoutHeight: 0
+    property int subtitleReferenceWidth: 0
+    property int subtitleReferenceHeight: 0
+    property string watermarkText: ""
+    property string watermarkKind: "text"
+    property url watermarkImageSource: ""
+    property url watermarkVideoSource: ""
+    property string watermarkFontFamily: "Arial"
+    property color watermarkTextColor: "#FFFFFF"
+    property bool watermarkBold: true
+    property bool watermarkItalic: true
+    property int watermarkOpacityPercent: 46
+    property int watermarkOutlinePercent: 100
+    property int watermarkScalePercent: 100
+    property bool watermarkInteractive: false
+    property bool watermarkEditEnabled: false
+    property var editorOverlays: []
+    property var selectedEditorClipIds: []
+    property var sourceEditDecisions: []
+    property real sequenceDurationSeconds: 0
+    property bool resultUsesSequenceTimeline: false
+    property int activeDecisionIndex: 0
+    readonly property bool editedSourceTimeline: sourceEditDecisions.length > 0
+        && (sourceEditDecisions.length !== 1
+            || Number(sourceEditDecisions[0].source_start_ms || 0) !== 0
+            || Number(sourceEditDecisions[0].sequence_start_ms || 0) !== 0
+            || Number(sourceEditDecisions[0].source_end_ms || 0) !== sequenceDurationSeconds * 1000)
+    readonly property bool inputPlaying: inputPlaybackRequested
+    readonly property bool resultPlaying: resultPlaybackRequested
+    readonly property bool sourceGap: sourceEditDecisions.length > 0
+        && decisionIndexForSequence(positionSeconds * 1000) < 0
+    signal subtitleActivated()
+    signal subtitleEditingDismissed()
+    signal subtitleLayoutPreviewChanged(int fontSize, int positionX, int positionY, int boxWidth, int boxHeight)
+    signal subtitleLayoutCommitted(int fontSize, int positionX, int positionY, int boxWidth, int boxHeight)
+    signal watermarkActivated()
+    signal watermarkEditingDismissed()
+    signal watermarkScalePreviewChanged(int scalePercent)
+    signal watermarkScaleCommitted(int beforeScalePercent, int afterScalePercent)
+    signal editorClipSelected(string clipId)
+    signal monitorSelected(string monitorId)
+    signal requestUrlImport()
+    signal requestDownloadProjectImport()
+    readonly property url effectiveResultSource: subtitleLivePreviewEnabled
+        && String(resultBaseSource).length > 0 ? resultBaseSource : resultSource
+    readonly property bool embeddedSourceAudio: String(root.controller.manualPreviewAudio.nativeSource || "").length > 0
+        && root.controller.manualPreviewAudio.canPlayEmbeddedSource(root.attachedResultSource)
+    readonly property real positionSeconds: scrubController.scrubPositionMs / 1000
+    readonly property real durationSeconds: sequenceDurationSeconds > 0
+        ? sequenceDurationSeconds : Math.max(inputPlayer.duration, resultPlayer.duration) / 1000
+    readonly property bool bothPlaying: synchronizedPlayback
+        && resultPlaybackRequested
+
+    color: Theme.codeSurface
+    radius: Theme.radiusSmall
+    border.width: 1
+    border.color: Theme.outline
+
+    function seekTo(seconds) {
+        beginScrub(seconds);
+        endScrub(seconds);
+    }
+
+    function decisionIndexForSequence(sequenceMs) {
+        for (let index = 0; index < sourceEditDecisions.length; ++index) {
+            const decision = sourceEditDecisions[index];
+            const duration = Number(decision.source_end_ms || 0)
+                - Number(decision.source_start_ms || 0);
+            const start = Number(decision.sequence_start_ms || 0);
+            if (sequenceMs >= start && sequenceMs < start + duration)
+                return index;
+        }
+        return -1;
+    }
+
+    function sourceMsForSequence(sequenceMs) {
+        if (sourceEditDecisions.length === 0)
+            return sequenceMs;
+        const index = decisionIndexForSequence(sequenceMs);
+        if (index < 0) {
+            // A gap has no source frame. Park the decoder at the nearest
+            // boundary and let the sequence clock/black pane carry the gap.
+            for (let next = 0; next < sourceEditDecisions.length; ++next) {
+                if (Number(sourceEditDecisions[next].sequence_start_ms || 0) > sequenceMs)
+                    return Number(sourceEditDecisions[next].source_start_ms || 0);
+            }
+            return Math.max(0, Number(sourceEditDecisions[sourceEditDecisions.length - 1].source_end_ms || 0) - 1);
+        }
+        const decision = sourceEditDecisions[index];
+        activeDecisionIndex = index;
+        return Number(decision.source_start_ms || 0)
+            + sequenceMs - Number(decision.sequence_start_ms || 0);
+    }
+
+    function sequenceMsForSource(sourceMs) {
+        if (sourceEditDecisions.length === 0)
+            return sourceMs;
+        const decision = sourceEditDecisions[Math.max(0,
+            Math.min(activeDecisionIndex, sourceEditDecisions.length - 1))];
+        return Number(decision.sequence_start_ms || 0)
+            + sourceMs - Number(decision.source_start_ms || 0);
+    }
+
+    function resultMsForSequence(sequenceMs) {
+        return resultUsesSequenceTimeline ? sequenceMs : sourceMsForSequence(sequenceMs);
+    }
+
+    function sequenceMsForResult(resultMs) {
+        return resultUsesSequenceTimeline ? resultMs : sequenceMsForSource(resultMs);
+    }
+
+    function togglePlayback() {
+        if (comparing)
+            toggleSynchronizedPlayback();
+        else if (activeMonitor === "source")
+            playOnly(inputPlayer);
+        else
+            playOnly(resultPlayer);
+    }
+
+    onActiveMonitorChanged: {
+        if (comparing)
+            return;
+        pausePlayback();
+        if (activeMonitor === "source") {
+            inputMuted = false;
+            resultMuted = true;
+            if (inputPlayer.seekable)
+                inputPlayer.position = sourceMsForSequence(positionSeconds * 1000);
+        } else {
+            inputMuted = true;
+            resultMuted = false;
+            seekTo(editedSourceTimeline ? positionSeconds : sequenceMsForSource(inputPlayer.position) / 1000);
+        }
+    }
+
+    onComparingChanged: {
+        inputPlaybackRequested = false;
+        if (!comparing) {
+            if (activeMonitor !== "source")
+                inputPlayer.pause();
+            synchronizedPlayback = false;
+        } else if (inputPlayer.seekable) {
+            inputPlayer.position = sourceMsForSequence(positionSeconds * 1000);
+            primeInputFrame();
+        }
+    }
+
+    function pausePlayback() {
+        scrubController.wasPlaying = false;
+        finishFrameRefresh(true);
+        finishFrameRefresh(false);
+        inputPlaybackRequested = false;
+        resultPlaybackRequested = false;
+        synchronizedPlayback = false;
+        inputPlayer.pause();
+        resultPlayer.pause();
+        syncAudio();
+    }
+
+    function shuttleForward() {
+        if (audioPreparationBusy)
+            return;
+        finishFrameRefresh(false);
+        resultPlaybackRequested = true;
+        resultPlayer.play();
+    }
+
+    function shuttleBackward() {
+        pausePlayback();
+        seekTo(Math.max(0, positionSeconds - 1));
+    }
+
+    function beginScrub(seconds) {
+        scrubController.begin(seconds * 1000, resultPlaybackRequested || inputPlaybackRequested);
+    }
+    function updateScrub(seconds) { scrubController.updatePosition(seconds * 1000); }
+    function endScrub(seconds) { scrubController.end(seconds * 1000); }
+
+    function syncAudio() {
+        root.controller.manualPreviewAudio.synchronize(
+            root.positionSeconds,
+            (root.comparing || root.activeMonitor === "result")
+                && root.resultPlaybackRequested
+                && resultPlayer.playbackState === MediaPlayer.PlayingState
+                && !root.resultPriming && !root.resultSourceSwitching && !scrubController.scrubbing,
+            root.resultMuted || root.suppressResultAudio, root.embeddedSourceAudio);
+    }
+    onResultMutedChanged: syncAudio()
+    onSuppressResultAudioChanged: syncAudio()
+    onEmbeddedSourceAudioChanged: syncAudio()
+    onPositionSecondsChanged: syncAudio()
+
+    PreviewScrubController {
+        id: scrubController
+        objectName: "manualPreviewScrubController"
+        onPauseRequested: {
+            root.finishFrameRefresh(false);
+            root.resultPlaybackRequested = false;
+            root.inputPlaybackRequested = false;
+            inputPlayer.pause();
+            resultPlayer.pause();
+            root.syncAudio();
+        }
+        onSeekRequested: function(positionMs) {
+            const sourcePositionMs = root.sourceMsForSequence(positionMs);
+            root.controller.manualPreviewAudio.seek(positionMs / 1000);
+            root.pendingResultPositionMs = positionMs;
+            root.lastStablePositionMs = positionMs;
+            if (!root.inputSourceSwitching && inputPlayer.seekable)
+                inputPlayer.position = sourcePositionMs;
+            if (!root.comparing && root.activeMonitor === "source"
+                    && (inputPlayer.seekable || (root.editedSourceTimeline && root.sourceGap)))
+                scrubController.observe(positionMs);
+            if (!root.resultSourceSwitching && resultPlayer.seekable) {
+                resultPlayer.position = root.resultMsForSequence(positionMs);
+                // Seeking to the current position need not emit positionChanged.
+                scrubController.observe(positionMs);
+            }
+        }
+        onResumeRequested: {
+            if (root.audioPreparationBusy)
+                return;
+            if (!root.comparing && root.activeMonitor === "source") {
+                if (!root.inputSourceSwitching)
+                    root.startInputPlayback();
+            } else if (!root.resultSourceSwitching) {
+                root.resultPlaybackRequested = true;
+                resultPlayer.play();
+                if (root.synchronizedPlayback)
+                    inputPlayer.play();
+            }
+        }
+    }
+
+    function restorePosition(seconds) {
+        pendingResultPositionMs = Math.max(0, Number(seconds || 0) * 1000);
+        lastStablePositionMs = pendingResultPositionMs;
+        seekTo(seconds);
+    }
+
+    function playOnly(player) {
+        if (player === resultPlayer && audioPreparationBusy)
+            return;
+        // Ignore transport input while the old native decoder is being
+        // detached.  Queuing play() in this short window can resurrect the
+        // previous Media Foundation audio buffer after the new source loads.
+        if ((player === inputPlayer && inputSourceSwitching)
+                || (player === resultPlayer && resultSourceSwitching))
+            return;
+        synchronizedPlayback = false;
+        if (player === inputPlayer && inputPriming)
+            finishFrameRefresh(true);
+        else if (player === resultPlayer && resultPriming)
+            finishFrameRefresh(false);
+        if (player === inputPlayer) {
+            resultPlaybackRequested = false;
+            resultPlayer.pause();
+            if (editedSourceTimeline) {
+                if (inputPlaybackRequested) {
+                    inputPlaybackRequested = false;
+                    inputPlayer.pause();
+                } else {
+                    startInputPlayback();
+                }
+                return;
+            }
+        } else {
+            inputPlaybackRequested = false;
+            inputPlayer.pause();
+        }
+        const requested = player === resultPlayer ? resultPlaybackRequested : inputPlaybackRequested;
+        if (requested) {
+            if (player === resultPlayer)
+                resultPlaybackRequested = false;
+            else
+                inputPlaybackRequested = false;
+            player.pause();
+        } else {
+            if (player === resultPlayer)
+                resultPlaybackRequested = true;
+            else
+                inputPlaybackRequested = true;
+            player.play();
+        }
+    }
+
+    function stopOnly(player) {
+        scrubController.wasPlaying = false;
+        synchronizedPlayback = false;
+        if (player === inputPlayer) {
+            inputPlaybackRequested = false;
+            finishFrameRefresh(true);
+        } else
+            finishFrameRefresh(false);
+        if (player === resultPlayer)
+            resultPlaybackRequested = false;
+        player.stop();
+        if (player === inputPlayer && editedSourceTimeline && activeMonitor === "source")
+            seekTo(0);
+    }
+
+    function resetPlayback() {
+        pausePlayback();
+        scrubController.reset();
+        inputPrimeTimer.stop();
+        resultPrimeTimer.stop();
+        resultFramePauseTimer.stop();
+        frameRefreshTimer.stop();
+        frameRefreshSafetyTimer.stop();
+    }
+
+    function releaseMedia() {
+        resetPlayback();
+        inputSourceSwapTimer.stop();
+        resultSourceSwapTimer.stop();
+        attachedInputSource = "";
+        attachedResultSource = "";
+    }
+
+    function reloadInputMedia() {
+        inputSourceSwitching = true;
+        inputSourceSwapTimer.restart();
+    }
+
+    function startInputPlayback() {
+        finishFrameRefresh(true);
+        if (positionSeconds >= durationSeconds)
+            seekTo(0);
+        inputClockTickMs = Date.now();
+        inputPlaybackRequested = true;
+        if (!sourceGap)
+            inputPlayer.play();
+    }
+
+    function toggleSynchronizedPlayback() {
+        if (audioPreparationBusy || inputSourceSwitching || resultSourceSwitching)
+            return;
+        if (bothPlaying) {
+            inputPlaybackRequested = false;
+            inputPlayer.pause();
+            resultPlayer.pause();
+            resultPlaybackRequested = false;
+            synchronizedPlayback = false;
+            return;
+        }
+        finishFrameRefresh(true);
+        finishFrameRefresh(false);
+        // Result audio is the comparison clock. Letting both tracks play is
+        // perceived as an echo or crackle when their decoders drift slightly.
+        inputMuted = true;
+        resultMuted = false;
+        synchronizedPlayback = true;
+        inputPlaybackRequested = true;
+        resultPlaybackRequested = true;
+        inputPlayer.position = root.sourceMsForSequence(root.sequenceMsForResult(resultPlayer.position));
+        inputPlayer.play();
+        resultPlayer.play();
+    }
+
+    function openFullscreen(showResult) {
+        fullscreenResult = showResult;
+        fullscreenLayer.open();
+    }
+
+    function closeFullscreen() {
+        fullscreenLayer.close();
+    }
+
+    function activateSubtitleEditor() {
+        pausePlayback();
+        subtitleActivated();
+    }
+
+    function activateWatermarkEditor() {
+        pausePlayback();
+        watermarkActivated();
+    }
+
+    function refreshCurrentFrame(player, inputFrame) {
+        if ((inputFrame ? String(attachedInputSource) : String(attachedResultSource)).length === 0)
+            return;
+        // A playing stream paints the newly attached VideoOutput by itself.
+        // Starting another priming cycle would mute its AudioOutput until a
+        // frame callback arrives, which is not guaranteed while the sink is
+        // being moved in or out of the fullscreen popup.
+        if (player.playbackState === MediaPlayer.PlayingState
+                || (!inputFrame && resultPlaybackRequested)
+                || synchronizedPlayback)
+            return;
+        if (inputFrame)
+            inputPriming = true;
+        else {
+            pendingResultPositionMs = scrubController.desiredPositionMs;
+            resultPriming = true;
+        }
+        frameRefreshSafetyTimer.restart();
+        player.play();
+    }
+
+    function finishFrameRefresh(inputFrame) {
+        if (inputFrame) {
+            if (!inputPriming)
+                return;
+            inputPlayer.pause();
+            inputPriming = false;
+        } else {
+            if (!resultPriming)
+                return;
+            resultPlayer.pause();
+            // Priming paints a frame, not a transport step. Preserve the
+            // exact stopped playhead even if decoding took several frames.
+            resultPlayer.position = resultMsForSequence(pendingResultPositionMs);
+            resultPriming = false;
+        }
+        if (!inputPriming && !resultPriming)
+            frameRefreshSafetyTimer.stop();
+    }
+
+    function primeInputFrame() {
+        if (!visible || (!comparing && !fullscreenLayer.opened)
+                || inputPane.framePresented
+                || inputPlayer.playbackState !== MediaPlayer.StoppedState
+                || inputSourceSwitching
+                || String(attachedInputSource).length === 0)
+            return;
+        inputPriming = true;
+        frameRefreshSafetyTimer.restart();
+        inputPlayer.play();
+    }
+
+    function primeResultFrame() {
+        if (!visible || resultPlayer.playbackState === MediaPlayer.PlayingState
+                || resultPlaybackRequested
+                || resultSourceSwitching
+                || String(attachedResultSource).length === 0)
+            return;
+        // Loading/seeking can leave the new decoder paused with the previous
+        // sink frame retained. Prime the replacement even in PausedState.
+        resultPane.framePresented = false;
+        pendingResultPositionMs = scrubController.desiredPositionMs;
+        resultPriming = true;
+        frameRefreshSafetyTimer.restart();
+        resultPlayer.play();
+    }
+
+    onInputSourceChanged: {
+        inputPlaybackRequested = false;
+        inputSourceSwitching = true;
+        inputPriming = false;
+        inputPlayer.stop();
+        attachedInputSource = "";
+        inputPane.framePresented = false;
+        inputSourceSwapTimer.restart();
+        if (!resultPriming)
+            frameRefreshSafetyTimer.stop();
+    }
+    onEffectiveResultSourceChanged: {
+        resultFramePauseTimer.stop();
+        pendingResultPositionMs = scrubController.desiredPositionMs;
+        // Decoder PlayingState can be first-frame priming, not user intent.
+        scrubController.wasPlaying = scrubController.wasPlaying || resultPlaybackRequested;
+        scrubController.sourceChanged();
+        // A cache swap is a media-clock boundary. Stop every previous clock
+        // before attaching the new mux, otherwise Windows Media Foundation
+        // can briefly replay buffered audio from both sources.
+        resultPlaybackRequested = false;
+        resultPriming = false;
+        resultSourceSwitching = true;
+        inputPlayer.pause();
+        resultPlayer.stop();
+        attachedResultSource = "";
+        resultPane.framePresented = false;
+        resultSourceSwapTimer.restart();
+        if (!inputPriming)
+            frameRefreshSafetyTimer.stop();
+    }
+    Component.onCompleted: {
+        root.controller.manualPreviewAudio.setPlaybackRate(root.playbackSpeed, 0);
+        // Source change handlers may run before the component is complete.
+        // Always enter through the detach/attach boundary for the initial
+        // sources as well, so opening a project cannot inherit a stale clock.
+        inputSourceSwitching = true;
+        resultSourceSwitching = true;
+        inputSourceSwapTimer.restart();
+        resultSourceSwapTimer.restart();
+    }
+    Component.onDestruction: {
+        scrubController.reset();
+        inputPlaybackRequested = false;
+        inputSourceSwitching = true;
+        resultSourceSwitching = true;
+        inputPlayer.stop();
+        resultPlayer.stop();
+        attachedInputSource = "";
+        attachedResultSource = "";
+        synchronizedPlayback = false;
+        resultPlaybackRequested = false;
+    }
+    onVisibleChanged: {
+        if (!visible)
+            resetPlayback();
+        else {
+            inputPrimeTimer.restart();
+            resultPrimeTimer.restart();
+        }
+    }
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 32
+            visible: !root.comparing
+            spacing: 0
+
+            Repeater {
+                model: [
+                    { "id": "result", "label": qsTr("Kết quả") },
+                    { "id": "source", "label": qsTr("Nguồn") }
+                ]
+                delegate: StudioButton {
+                    required property var modelData
+                    text: modelData.label
+                    variant: root.activeMonitor === modelData.id ? "secondary" : "ghost"
+                    onClicked: root.monitorSelected(modelData.id)
+                }
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 220
+            Layout.margins: Theme.space8
+            spacing: Theme.space8
+
+            PreviewPane {
+                id: inputPane
+                visible: root.comparing || root.activeMonitor === "source"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: root.width * 0.35
+                Layout.minimumWidth: 170
+                paneTitle: qsTr("Nguồn")
+                player: inputPlayer
+                muted: root.inputMuted
+                mediaKey: String(root.inputSource)
+                onFirstFramePresented: {
+                    root.finishFrameRefresh(true);
+                }
+                onPlayRequested: root.playOnly(inputPlayer)
+                onStopRequested: root.stopOnly(inputPlayer)
+                onMuteRequested: {
+                    root.inputMuted = !root.inputMuted;
+                    if (!root.inputMuted)
+                        root.resultMuted = true;
+                }
+                onFullscreenRequested: root.openFullscreen(false)
+            }
+
+            PreviewPane {
+                id: resultPane
+                visible: root.comparing || root.activeMonitor === "result"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: root.width * (root.comparing ? 0.65 : 1)
+                Layout.minimumWidth: 420
+                paneTitle: qsTr("Kết quả")
+                player: resultPlayer
+                muted: root.resultMuted
+                mediaKey: String(root.effectiveResultSource)
+                awaitingMedia: String(root.effectiveResultSource).length === 0
+                busy: root.previewBusy
+                progress: root.previewProgress
+                onFirstFramePresented: {
+                    // Let VideoOutput consume/upload the replacement frame
+                    // before pausing the native decoder again.
+                    resultFramePauseTimer.restart();
+                }
+                onPlayRequested: root.playOnly(resultPlayer)
+                onStopRequested: root.stopOnly(resultPlayer)
+                onMuteRequested: {
+                    root.resultMuted = !root.resultMuted;
+                    if (!root.resultMuted)
+                        root.inputMuted = true;
+                }
+                onFullscreenRequested: root.openFullscreen(true)
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 52
+            color: Theme.surfaceElevated
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.space12
+                anchors.rightMargin: Theme.space12
+                spacing: Theme.space8
+
+                StudioButton {
+                    id: transportButton
+                    objectName: "manualPreviewTransportButton"
+                    Layout.minimumWidth: transportLabelMetrics.width + Theme.icon + 8 + leftPadding + rightPadding
+                    Layout.preferredWidth: Layout.minimumWidth
+                    Layout.maximumWidth: Layout.minimumWidth
+                    text: root.comparing
+                        ? (root.bothPlaying ? qsTr("Tạm dừng cả hai") : qsTr("Phát cả hai"))
+                        : root.activeMonitor === "source"
+                            ? (root.inputPlaying ? qsTr("Tạm dừng") : qsTr("Phát"))
+                        : (root.resultPlaybackRequested ? qsTr("Tạm dừng") : qsTr("Phát"))
+                    iconName: root.comparing
+                        ? (root.bothPlaying ? "pause" : "play")
+                        : root.activeMonitor === "source"
+                            ? (root.inputPlaying ? "pause" : "play")
+                        : (root.resultPlaybackRequested ? "pause" : "play")
+                    variant: "secondary"
+                    enabled: root.activeMonitor === "source" && !root.comparing
+                        ? String(root.inputSource).length > 0
+                        : String(root.resultSource).length > 0
+                            && (!root.comparing || String(root.inputSource).length > 0)
+                    onClicked: root.togglePlayback()
+
+                    TextMetrics {
+                        id: transportLabelMetrics
+                        font: transportButton.font
+                        text: root.comparing ? qsTr("Tạm dừng cả hai") : qsTr("Tạm dừng")
+                    }
+                }
+
+                Text {
+                    Layout.preferredWidth: 64
+                    text: root.formatTime(root.positionSeconds)
+                    color: Theme.text
+                    font.pixelSize: Theme.caption
+                    font.family: "Cascadia Mono"
+                    textFormat: Text.PlainText
+                }
+
+                StudioSlider {
+                    id: inlineSeekSlider
+                    objectName: "manualPreviewSeekSlider"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: Math.max(0.1, root.durationSeconds)
+                    Binding on value {
+                        when: !inlineSeekSlider.pressed
+                        value: root.positionSeconds
+                        restoreMode: Binding.RestoreBindingOrValue
+                    }
+                    enabled: root.durationSeconds > 0
+                    onPressedChanged: pressed ? root.beginScrub(value) : root.endScrub(value)
+                    onMoved: root.updateScrub(value)
+                    Accessible.name: qsTr("Vị trí xem trước")
+                }
+
+                Text {
+                    Layout.preferredWidth: 64
+                    text: root.formatTime(root.durationSeconds)
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.caption
+                    font.family: "Cascadia Mono"
+                    horizontalAlignment: Text.AlignRight
+                    textFormat: Text.PlainText
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.leftMargin: Theme.space8
+        anchors.rightMargin: Theme.space8
+        anchors.topMargin: 32
+        anchors.bottomMargin: 52
+        z: 5
+        visible: root.emptySource
+        color: Theme.video
+        radius: Theme.radiusSmall
+        border.width: 1
+        border.color: Theme.outline
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            width: Math.min(280, parent.width - Theme.space16 * 2)
+            spacing: Theme.space12
+
+            AppIcon {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+                glyph: "\uE710"
+                iconColor: Theme.textMuted
+                iconSize: Theme.iconLarge
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Chưa có video nguồn")
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: TypeScale.control
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignHCenter
+                textFormat: Text.PlainText
+            }
+
+            MediaSourceImportButton {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: 148
+                enabled: root.controller.canEditSelectedVideo
+                onFileRequested: root.controller.browseVideo()
+                onLinkRequested: root.requestUrlImport()
+                onDownloadProjectRequested: root.requestDownloadProjectImport()
+            }
+        }
+    }
+
+    Popup {
+        id: fullscreenLayer
+        parent: Overlay.overlay
+        x: 0
+        y: 0
+        width: parent ? parent.width : 0
+        height: parent ? parent.height : 0
+        padding: 0
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: Theme.video }
+
+        contentItem: Item {
+            PreviewViewport {
+                id: fullscreenViewport
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: fullscreenTransport.top
+                anchors.margins: Theme.space12
+                zoomPercent: root.previewZoomPercent
+                onZoomRequested: function(percent) { root.previewZoomRequested(percent); }
+                onBackgroundTapped: {
+                    if (root.subtitleEditEnabled) root.subtitleEditingDismissed();
+                    if (root.watermarkEditEnabled) root.watermarkEditingDismissed();
+                }
+
+            OutputFramePreview {
+                id: fullscreenOutput
+                endOfStreamPolicy: VideoOutput.KeepLastFrame
+                anchors.fill: parent
+                outputFormat: root.fullscreenResult ? root.resultOutputFormat : "keep_ratio"
+                thumbnailSource: root.thumbnailSource
+                thumbnailOutputFormat: root.fullscreenResult ? root.resultThumbnailOutputFormat : "keep_ratio"
+                showThumbnail: root.fullscreenResult ? !resultPane.framePresented : !inputPane.framePresented
+            }
+
+            Rectangle {
+                anchors.fill: fullscreenOutput
+                z: 1
+                color: Theme.video
+                visible: !root.fullscreenResult && root.sourceGap
+            }
+
+            SubtitleTransformOverlay {
+                objectName: "fullscreenSubtitleTransformOverlay"
+                backgroundDismissEnabled: false
+                anchors.fill: fullscreenOutput
+                z: 4
+                videoRect: fullscreenOutput.contentRect
+                subtitleText: root.subtitleText
+                sprite: root.subtitleSprite
+                karaokeProgress: root.subtitleKaraokeProgress
+                fontSize: root.subtitleFontSize
+                positionXPercent: root.subtitlePositionXPercent
+                positionYPercent: root.subtitlePositionYPercent
+                boxWidthPercent: root.subtitleBoxWidthPercent
+                boxHeightPercent: root.subtitleBoxHeightPercent
+                outlineWidth: root.subtitleOutline
+                layoutWidthPixels: root.subtitleLayoutWidth
+                layoutHeightPixels: root.subtitleLayoutHeight
+                referenceWidthPixels: root.subtitleReferenceWidth
+                referenceHeightPixels: root.subtitleReferenceHeight
+                interactive: fullscreenLayer.visible
+                    && !root.previewBusy && !root.resultPriming && !root.resultSourceSwitching
+                    && root.fullscreenResult
+                    && root.subtitleInteractive
+                    && String(root.resultBaseSource).length > 0
+                editing: interactive && root.subtitleEditEnabled
+                livePreviewVisible: root.fullscreenResult && root.subtitleLivePreviewEnabled
+                    && !root.previewBusy && !root.resultPriming && !root.resultSourceSwitching
+                onActivated: root.activateSubtitleEditor()
+                onEditingDismissed: root.subtitleEditingDismissed()
+                onLayoutPreviewChanged: function(fontSize, positionX, positionY, boxWidth, boxHeight) {
+                    root.subtitleLayoutPreviewChanged(fontSize, positionX, positionY, boxWidth, boxHeight);
+                }
+                onLayoutCommitted: function(fontSize, positionX, positionY, boxWidth, boxHeight) {
+                    root.subtitleLayoutCommitted(fontSize, positionX, positionY, boxWidth, boxHeight);
+                }
+            }
+
+            OcrLayersOverlay {
+                objectName: "fullscreenOcrRegionOverlay"
+                anchors.fill: fullscreenOutput
+                z: root.ocrEditing ? 8 : 3
+                videoRect: fullscreenOutput.contentRect
+                layers: root.ocrLayers
+                regionDrafts: root.ocrRegionDrafts
+                selectedLayerId: root.selectedOcrLayerId
+                positionSeconds: root.positionSeconds
+                sourceFramePercent: root.ocrFramePercent(root.fullscreenResult)
+                interactive: fullscreenLayer.visible && root.ocrInteractive && !root.previewBusy
+                    && !(root.fullscreenResult ? root.resultPriming || root.resultSourceSwitching
+                        : root.inputPriming || root.inputSourceSwitching)
+                editing: interactive && root.ocrEditing
+                onLayerSelected: function(clipId) { root.pausePlayback(); root.ocrLayerSelected(clipId); }
+                onRegionEdited: function(clipId, region) { root.ocrLayerRegionEdited(clipId, region); }
+            }
+
+            WatermarkTransformOverlay {
+                objectName: "fullscreenWatermarkTransformOverlay"
+                backgroundDismissEnabled: false
+                anchors.fill: fullscreenOutput
+                z: 5
+                videoRect: fullscreenOutput.contentRect
+                watermarkText: root.watermarkText
+                watermarkKind: root.watermarkKind
+                watermarkImageSource: root.watermarkImageSource
+                watermarkVideoSource: root.watermarkVideoSource
+                fontFamily: root.watermarkFontFamily
+                textColor: root.watermarkTextColor
+                fontBold: root.watermarkBold
+                fontItalic: root.watermarkItalic
+                opacityPercent: root.watermarkOpacityPercent
+                outlinePercent: root.watermarkOutlinePercent
+                scalePercent: root.watermarkScalePercent
+                timeSeconds: root.positionSeconds
+                playing: root.resultPlaybackRequested && !root.resultPriming
+                referenceWidthPixels: root.subtitleReferenceWidth
+                referenceHeightPixels: root.subtitleReferenceHeight
+                interactive: fullscreenLayer.visible
+                    && !root.previewBusy && !root.resultPriming && !root.resultSourceSwitching
+                    && root.fullscreenResult
+                    && root.watermarkInteractive
+                    && String(root.resultBaseSource).length > 0
+                editing: interactive && root.watermarkEditEnabled
+                livePreviewVisible: root.fullscreenResult && !root.previewBusy && !root.resultPriming && !root.resultSourceSwitching
+                onActivated: root.activateWatermarkEditor()
+                onEditingDismissed: root.watermarkEditingDismissed()
+                onScalePreviewChanged: function(value) {
+                    root.watermarkScalePreviewChanged(value);
+                }
+                onScaleCommitted: function(beforeValue, afterValue) {
+                    root.watermarkScaleCommitted(beforeValue, afterValue);
+                }
+            }
+
+            EditorOverlayLayer {
+                anchors.fill: fullscreenOutput
+                z: 6
+                visible: fullscreenLayer.visible && root.fullscreenResult
+                videoRect: fullscreenOutput.contentRect
+                overlays: root.editorOverlays
+                selectedClipIds: root.selectedEditorClipIds
+                timeSeconds: root.positionSeconds
+                playing: root.resultPlaybackRequested && !root.resultPriming
+                interactive: fullscreenLayer.visible && root.fullscreenResult
+                    && !root.previewBusy && !root.resultPriming && !root.resultSourceSwitching
+                mediaActive: fullscreenLayer.visible && root.fullscreenResult
+                onClipSelected: function(clipId) { root.editorClipSelected(clipId); }
+            }
+            }
+
+            Connections {
+                target: fullscreenOutput.videoSink
+                enabled: fullscreenLayer.visible
+
+                function onVideoFrameChanged() {
+                    if (fullscreenOutput.videoSink.videoSize.width <= 0
+                            || fullscreenOutput.videoSink.videoSize.height <= 0)
+                        return;
+                    root.finishFrameRefresh(!root.fullscreenResult);
+                }
+            }
+
+            Rectangle {
+                id: fullscreenTransport
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 52
+                color: Theme.surfaceElevated
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.space12
+                    anchors.rightMargin: Theme.space12
+                    spacing: Theme.space8
+
+                    StudioButton {
+                        visible: root.ocrEditing
+                        text: qsTr("Bỏ thay đổi")
+                        variant: "secondary"
+                        onClicked: root.ocrDiscardRequested()
+                    }
+                    StudioButton {
+                        visible: root.ocrEditing
+                        text: qsTr("Áp dụng")
+                        onClicked: root.ocrApplyRequested()
+                    }
+
+                    StudioIconButton {
+                        iconName: (root.fullscreenResult ? root.resultPlaying : root.inputPlaying)
+                            ? "pause" : "play"
+                        toolTipText: qsTr("Phát hoặc tạm dừng")
+                        onClicked: root.fullscreenResult
+                            ? root.playOnly(resultPlayer)
+                            : root.playOnly(inputPlayer)
+                    }
+                    StudioIconButton {
+                        iconName: "stop"
+                        toolTipText: qsTr("Dừng")
+                        onClicked: root.fullscreenResult
+                            ? root.stopOnly(resultPlayer)
+                            : root.stopOnly(inputPlayer)
+                    }
+                    StudioIconButton {
+                        iconName: (root.fullscreenResult ? root.resultMuted : root.inputMuted)
+                            ? "muted" : "volume"
+                        toolTipText: qsTr("Bật hoặc tắt tiếng")
+                        onClicked: {
+                            if (root.fullscreenResult)
+                                root.resultMuted = !root.resultMuted;
+                            else
+                                root.inputMuted = !root.inputMuted;
+                        }
+                    }
+                    PlaybackSpeedButton {
+                        objectName: "manualFullscreenSpeedButton"
+                        speed: root.playbackSpeed
+                        onEdited: function(value) { root.playbackSpeed = value; }
+                    }
+                    StudioSlider {
+                        id: fullscreenSeekSlider
+                        objectName: "manualFullscreenSeekSlider"
+                        Layout.fillWidth: true
+                        from: 0
+                        to: Math.max(0.1, root.durationSeconds)
+                        Binding on value {
+                            when: !fullscreenSeekSlider.pressed
+                            value: root.positionSeconds
+                            restoreMode: Binding.RestoreBindingOrValue
+                        }
+                        onPressedChanged: pressed ? root.beginScrub(value) : root.endScrub(value)
+                        onMoved: root.updateScrub(value)
+                        Accessible.name: qsTr("Vị trí xem trước")
+                    }
+                }
+            }
+
+            StudioIconButton {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: Theme.space16
+                iconName: "close"
+                toolTipText: qsTr("Đóng")
+                onClicked: fullscreenLayer.close()
+            }
+        }
+
+        onOpened: frameRefreshTimer.restart()
+        onClosed: {
+            // The inline sink already presented the old frame before the
+            // popup opened. Reset its latch so the reattached sink can finish
+            // the new priming cycle instead of leaving audio muted.
+            if (root.fullscreenResult)
+                resultPane.framePresented = false;
+            else
+                inputPane.framePresented = false;
+            frameRefreshTimer.restart();
+        }
+    }
+
+    Timer {
+        id: inputSourceSwapTimer
+        interval: 40
+        repeat: false
+        onTriggered: {
+            root.attachedInputSource = root.inputSource;
+            if (String(root.attachedInputSource).length === 0)
+                root.inputSourceSwitching = false;
+        }
+    }
+
+    Timer {
+        id: resultSourceSwapTimer
+        interval: 40
+        repeat: false
+        onTriggered: {
+            root.resultSourceSwitching = String(root.effectiveResultSource).length > 0;
+            root.attachedResultSource = root.effectiveResultSource;
+            if (String(root.attachedResultSource).length === 0
+                    || String(root.attachedResultSource) !== String(root.effectiveResultSource))
+                root.resultSourceSwitching = false;
+        }
+    }
+
+    Timer {
+        id: inputPrimeTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.primeInputFrame()
+    }
+
+    Timer {
+        id: resultPrimeTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.primeResultFrame()
+    }
+
+    Timer {
+        id: resultFramePauseTimer
+        interval: 40
+        repeat: false
+        onTriggered: root.finishFrameRefresh(false)
+    }
+
+    Timer {
+        id: frameRefreshTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.refreshCurrentFrame(
+            root.fullscreenResult ? resultPlayer : inputPlayer,
+            !root.fullscreenResult
+        )
+    }
+
+    Timer {
+        id: frameRefreshSafetyTimer
+        interval: 750
+        repeat: false
+        onTriggered: {
+            // Some Windows multimedia backends do not emit a sink frame when
+            // a paused stream is rebound. Never let that backend quirk keep
+            // either AudioOutput muted indefinitely.
+            root.finishFrameRefresh(true);
+            root.finishFrameRefresh(false);
+        }
+    }
+
+    Timer {
+        interval: 40
+        repeat: true
+        running: root.visible && root.editedSourceTimeline && root.inputPlaybackRequested
+            && !root.comparing && root.activeMonitor === "source" && !root.inputSourceSwitching
+        onTriggered: {
+            const now = Date.now();
+            const next = Math.min(root.durationSeconds * 1000,
+                scrubController.scrubPositionMs + Math.max(0, now - root.inputClockTickMs) * root.playbackSpeed);
+            root.inputClockTickMs = now;
+            scrubController.observe(next);
+            root.lastStablePositionMs = next;
+            if (next >= root.durationSeconds * 1000 || root.sourceGap) {
+                inputPlayer.pause();
+                if (next >= root.durationSeconds * 1000)
+                    root.inputPlaybackRequested = false;
+                return;
+            }
+            const sourcePosition = root.sourceMsForSequence(next);
+            if (Math.abs(inputPlayer.position - sourcePosition) > 180)
+                inputPlayer.position = sourcePosition;
+            if (inputPlayer.playbackState !== MediaPlayer.PlayingState)
+                inputPlayer.play();
+        }
+    }
+
+    Timer {
+        interval: 180
+        repeat: true
+        running: root.visible && !root.resultPriming && (root.resultPlaybackRequested
+            || root.synchronizedPlayback)
+        onTriggered: {
+            if (!root.resultUsesSequenceTimeline && root.sourceEditDecisions.length > 0
+                    && root.activeDecisionIndex < root.sourceEditDecisions.length - 1) {
+                const decision = root.sourceEditDecisions[root.activeDecisionIndex];
+                const endMs = Number(decision.source_end_ms || 0);
+                if (resultPlayer.position >= endMs - 35) {
+                    root.activeDecisionIndex += 1;
+                    const next = root.sourceEditDecisions[root.activeDecisionIndex];
+                    const nextSource = Number(next.source_start_ms || 0);
+                    resultPlayer.position = nextSource;
+                    if (root.synchronizedPlayback)
+                        inputPlayer.position = nextSource;
+                    root.controller.manualPreviewAudio.seek(Number(next.sequence_start_ms || 0) / 1000);
+                    scrubController.observe(Number(next.sequence_start_ms || 0));
+                }
+            }
+            const masterPosition = root.sourceMsForSequence(root.sequenceMsForResult(resultPlayer.position));
+            if (!scrubController.scrubbing && !scrubController.pending
+                    && root.synchronizedPlayback && Math.abs(inputPlayer.position - masterPosition) > 220)
+                inputPlayer.position = masterPosition;
+            if (root.synchronizedPlayback && root.editedSourceTimeline) {
+                if (root.sourceGap)
+                    inputPlayer.pause();
+                else if (inputPlayer.playbackState !== MediaPlayer.PlayingState)
+                    inputPlayer.play();
+            }
+        }
+    }
+
+    MediaPlayer {
+        id: inputPlayer
+        objectName: "manualInputPlayer"
+        playbackRate: root.playbackSpeed
+        pitchCompensation: true
+        source: root.attachedInputSource
+        videoOutput: fullscreenLayer.visible && !root.fullscreenResult
+            ? fullscreenOutput.videoOutput : inputPane.videoOutputItem
+        audioOutput: DefaultAudioOutput {
+            muted: root.inputMuted || root.inputPriming || root.inputSourceSwitching || root.sourceGap
+        }
+
+        onMediaStatusChanged: function() {
+            if (inputPlayer.mediaStatus === MediaPlayer.EndOfMedia) {
+                if (!root.editedSourceTimeline)
+                    root.inputPlaybackRequested = false;
+                root.finishFrameRefresh(true);
+                return;
+            }
+            if (inputPlayer.mediaStatus === MediaPlayer.InvalidMedia) {
+                root.inputPlaybackRequested = false;
+                root.inputSourceSwitching = false;
+                root.finishFrameRefresh(true);
+                return;
+            }
+            if (inputPlayer.mediaStatus === MediaPlayer.LoadedMedia
+                    || inputPlayer.mediaStatus === MediaPlayer.BufferedMedia) {
+                root.inputSourceSwitching = false;
+                inputPlayer.position = root.sourceMsForSequence(scrubController.desiredPositionMs);
+                inputPrimeTimer.restart();
+            }
+        }
+
+        onErrorOccurred: function() {
+            root.inputPlaybackRequested = false;
+            root.inputSourceSwitching = false;
+            root.finishFrameRefresh(true);
+        }
+
+        onPositionChanged: function() {
+            if (!root.comparing && root.activeMonitor === "source"
+                    && !root.editedSourceTimeline && !root.inputPriming && !root.inputSourceSwitching) {
+                const sequencePosition = root.sequenceMsForSource(inputPlayer.position);
+                scrubController.observe(sequencePosition);
+                root.lastStablePositionMs = sequencePosition;
+            }
+        }
+    }
+
+    MediaPlayer {
+        id: resultPlayer
+        objectName: "manualResultPlayer"
+        playbackRate: root.playbackSpeed
+        pitchCompensation: true
+        source: root.attachedResultSource
+        videoOutput: fullscreenLayer.visible && root.fullscreenResult
+            ? fullscreenOutput.videoOutput : resultPane.videoOutputItem
+        audioOutput: DefaultAudioOutput {
+            volume: root.controller.manualPreviewAudio.nativeVolume === undefined
+                ? 0 : root.controller.manualPreviewAudio.nativeVolume
+            muted: !root.embeddedSourceAudio || root.resultMuted || root.suppressResultAudio
+                || root.resultPriming || root.resultSourceSwitching
+                || (!root.comparing && root.activeMonitor !== "result")
+        }
+        onPlaybackStateChanged: root.syncAudio()
+
+        onMediaStatusChanged: function() {
+            if (String(root.attachedResultSource).length === 0
+                    || String(root.attachedResultSource) !== String(root.effectiveResultSource))
+                return;
+            if (resultPlayer.mediaStatus === MediaPlayer.EndOfMedia) {
+                scrubController.wasPlaying = false;
+                root.inputPlaybackRequested = false;
+                inputPlayer.pause();
+                root.resultPlaybackRequested = false;
+                root.synchronizedPlayback = false;
+                root.finishFrameRefresh(false);
+                return;
+            }
+            if (resultPlayer.mediaStatus === MediaPlayer.InvalidMedia) {
+                root.resultPlaybackRequested = false;
+                root.resultSourceSwitching = false;
+                root.finishFrameRefresh(false);
+                return;
+            }
+            if (resultPlayer.mediaStatus !== MediaPlayer.LoadedMedia
+                    && resultPlayer.mediaStatus !== MediaPlayer.BufferedMedia)
+                return;
+            if (!root.resultSourceSwitching)
+                return;
+            root.resultSourceSwitching = false;
+            scrubController.sourceReady();
+            if (root.resultPlaybackRequested) {
+                play();
+            } else {
+                resultPrimeTimer.restart();
+            }
+        }
+
+        onErrorOccurred: function() {
+            if (String(root.attachedResultSource).length === 0)
+                return;
+            root.resultPlaybackRequested = false;
+            root.resultSourceSwitching = false;
+            root.finishFrameRefresh(false);
+        }
+
+        onPositionChanged: function() {
+            if (!root.resultPriming && !root.resultSourceSwitching
+                    && String(root.attachedResultSource).length > 0
+                    && String(root.attachedResultSource) === String(root.effectiveResultSource)) {
+                const sequencePosition = root.sequenceMsForResult(resultPlayer.position);
+                if (root.comparing || root.activeMonitor === "result")
+                    scrubController.observe(sequencePosition);
+                root.lastStablePositionMs = sequencePosition;
+            }
+        }
+    }
+
+    component PreviewPane: Rectangle {
+        id: pane
+
+        required property string paneTitle
+        required property var player
+        required property bool muted
+        readonly property alias videoOutputItem: paneVideoOutput.videoOutput
+        property string mediaKey: ""
+        property bool framePresented: false
+        property bool busy: false
+        property bool awaitingMedia: false
+        readonly property bool overlaysReady: framePresented && !awaitingMedia
+            && !(pane === resultPane ? root.resultPriming || root.resultSourceSwitching
+                : root.inputPriming || root.inputSourceSwitching)
+        property real progress: 0
+        signal firstFramePresented()
+        signal playRequested()
+        signal stopRequested()
+        signal muteRequested()
+        signal fullscreenRequested()
+
+        color: Theme.video
+        radius: Theme.radiusSmall
+        border.width: 1
+        border.color: Theme.divider
+        clip: true
+
+        onMediaKeyChanged: framePresented = false
+
+        PreviewViewport {
+            id: paneViewport
+            objectName: pane === resultPane ? "manualResultViewport" : "manualSourceViewport"
+            anchors.fill: parent
+            zoomPercent: root.previewZoomPercent
+            onZoomRequested: function(percent) { root.previewZoomRequested(percent); }
+            onBackgroundTapped: {
+                if (pane !== resultPane) return;
+                if (root.subtitleEditEnabled) root.subtitleEditingDismissed();
+                if (root.watermarkEditEnabled) root.watermarkEditingDismissed();
+            }
+
+        OutputFramePreview {
+            id: paneVideoOutput
+            objectName: pane === resultPane ? "manualResultVideoOutput" : "manualInputVideoOutput"
+            endOfStreamPolicy: VideoOutput.KeepLastFrame
+            anchors.fill: parent
+            outputFormat: pane === resultPane ? root.resultOutputFormat : "keep_ratio"
+            thumbnailSource: root.thumbnailSource
+            thumbnailOutputFormat: pane === resultPane ? root.resultThumbnailOutputFormat : "keep_ratio"
+            showThumbnail: !pane.framePresented
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: Theme.video
+            visible: pane === inputPane && root.sourceGap
+        }
+
+        SubtitleTransformOverlay {
+            objectName: "inlineSubtitleTransformOverlay"
+            backgroundDismissEnabled: false
+            anchors.fill: parent
+            z: 4
+            videoRect: paneVideoOutput.contentRect
+            subtitleText: root.subtitleText
+            sprite: root.subtitleSprite
+            karaokeProgress: root.subtitleKaraokeProgress
+            fontSize: root.subtitleFontSize
+            positionXPercent: root.subtitlePositionXPercent
+            positionYPercent: root.subtitlePositionYPercent
+            boxWidthPercent: root.subtitleBoxWidthPercent
+            boxHeightPercent: root.subtitleBoxHeightPercent
+            outlineWidth: root.subtitleOutline
+            layoutWidthPixels: root.subtitleLayoutWidth
+            layoutHeightPixels: root.subtitleLayoutHeight
+            referenceWidthPixels: root.subtitleReferenceWidth
+            referenceHeightPixels: root.subtitleReferenceHeight
+            interactive: pane === resultPane
+                && pane.overlaysReady
+                && !fullscreenLayer.visible
+                && root.subtitleInteractive
+                && String(root.resultBaseSource).length > 0
+            editing: interactive && root.subtitleEditEnabled
+            livePreviewVisible: pane === resultPane && pane.overlaysReady && root.subtitleLivePreviewEnabled
+            onActivated: root.activateSubtitleEditor()
+            onEditingDismissed: root.subtitleEditingDismissed()
+            onLayoutPreviewChanged: function(fontSize, positionX, positionY, boxWidth, boxHeight) {
+                root.subtitleLayoutPreviewChanged(fontSize, positionX, positionY, boxWidth, boxHeight);
+            }
+            onLayoutCommitted: function(fontSize, positionX, positionY, boxWidth, boxHeight) {
+                root.subtitleLayoutCommitted(fontSize, positionX, positionY, boxWidth, boxHeight);
+            }
+        }
+
+        OcrLayersOverlay {
+            objectName: pane === resultPane ? "manualResultOcrRegionOverlay" : "manualSourceOcrRegionOverlay"
+            anchors.fill: parent
+            z: root.ocrEditing ? 8 : 3
+            videoRect: paneVideoOutput.contentRect
+            layers: root.ocrLayers
+            regionDrafts: root.ocrRegionDrafts
+            selectedLayerId: root.selectedOcrLayerId
+            positionSeconds: root.positionSeconds
+            sourceFramePercent: root.ocrFramePercent(pane === resultPane)
+            interactive: !fullscreenLayer.visible && root.ocrInteractive && pane.overlaysReady
+            editing: interactive && root.ocrEditing
+            onLayerSelected: function(clipId) { root.pausePlayback(); root.ocrLayerSelected(clipId); }
+            onRegionEdited: function(clipId, region) { root.ocrLayerRegionEdited(clipId, region); }
+        }
+
+        WatermarkTransformOverlay {
+            objectName: "inlineWatermarkTransformOverlay"
+            backgroundDismissEnabled: false
+            anchors.fill: parent
+            z: 5
+            videoRect: paneVideoOutput.contentRect
+            watermarkText: root.watermarkText
+            watermarkKind: root.watermarkKind
+            watermarkImageSource: root.watermarkImageSource
+            watermarkVideoSource: root.watermarkVideoSource
+            fontFamily: root.watermarkFontFamily
+            textColor: root.watermarkTextColor
+            fontBold: root.watermarkBold
+            fontItalic: root.watermarkItalic
+            opacityPercent: root.watermarkOpacityPercent
+            outlinePercent: root.watermarkOutlinePercent
+            scalePercent: root.watermarkScalePercent
+            timeSeconds: root.positionSeconds
+            playing: root.resultPlaybackRequested && !root.resultPriming
+            referenceWidthPixels: root.subtitleReferenceWidth
+            referenceHeightPixels: root.subtitleReferenceHeight
+            interactive: pane === resultPane
+                && pane.overlaysReady
+                && !fullscreenLayer.visible
+                && root.watermarkInteractive
+                && String(root.resultBaseSource).length > 0
+            editing: interactive && root.watermarkEditEnabled
+            livePreviewVisible: pane === resultPane && pane.overlaysReady
+            onActivated: root.activateWatermarkEditor()
+            onEditingDismissed: root.watermarkEditingDismissed()
+            onScalePreviewChanged: function(value) {
+                root.watermarkScalePreviewChanged(value);
+            }
+            onScaleCommitted: function(beforeValue, afterValue) {
+                root.watermarkScaleCommitted(beforeValue, afterValue);
+            }
+        }
+
+        EditorOverlayLayer {
+            anchors.fill: parent
+            z: 6
+            visible: pane === resultPane && !fullscreenLayer.visible
+            videoRect: paneVideoOutput.contentRect
+            overlays: root.editorOverlays
+            selectedClipIds: root.selectedEditorClipIds
+            timeSeconds: root.positionSeconds
+            playing: root.resultPlaybackRequested && !root.resultPriming
+            interactive: pane === resultPane && !fullscreenLayer.visible && pane.overlaysReady
+            mediaActive: pane === resultPane && !fullscreenLayer.visible
+            onClipSelected: function(clipId) { root.editorClipSelected(clipId); }
+        }
+        }
+
+        Connections {
+            target: paneVideoOutput.videoSink
+
+            function onVideoFrameChanged() {
+                if ((pane === resultPane ? root.resultSourceSwitching : root.inputSourceSwitching)
+                        || pane.framePresented
+                        || paneVideoOutput.videoSink.videoSize.width <= 0
+                        || paneVideoOutput.videoSink.videoSize.height <= 0)
+                    return;
+                pane.framePresented = true;
+                pane.firstFramePresented();
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            visible: pane.awaitingMedia
+            color: Theme.scrim
+            z: 8
+
+            Text {
+                anchors.centerIn: parent
+                text: qsTr("Đang chuẩn bị bản xem trước…")
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: TypeScale.metadata
+                textFormat: Text.PlainText
+            }
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.margins: Theme.space8
+            width: paneLabel.implicitWidth + Theme.space16
+            height: 28
+            radius: Theme.radiusTiny
+            color: Theme.scrim
+            z: 3
+
+            Text {
+                id: paneLabel
+                anchors.centerIn: parent
+                text: pane.paneTitle
+                color: Theme.text
+                font.pixelSize: Theme.caption
+                font.weight: Font.DemiBold
+                textFormat: Text.PlainText
+            }
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.bottom: parent.bottom
+            anchors.margins: Theme.space8
+            width: paneControls.implicitWidth + Theme.space8
+            height: 38
+            radius: Theme.radiusSmall
+            color: Theme.scrim
+            z: 5
+
+            RowLayout {
+                id: paneControls
+                anchors.centerIn: parent
+                spacing: 0
+
+                StudioIconButton {
+                    iconName: (pane === inputPane ? root.inputPlaying : root.resultPlaying) ? "pause" : "play"
+                    toolTipText: (pane === inputPane ? root.inputPlaying : root.resultPlaying)
+                        ? qsTr("Tạm dừng") : qsTr("Phát")
+                    onClicked: pane.playRequested()
+                }
+                StudioIconButton {
+                    iconName: "stop"
+                    toolTipText: qsTr("Dừng")
+                    onClicked: pane.stopRequested()
+                }
+                StudioIconButton {
+                    iconName: pane.muted ? "muted" : "volume"
+                    toolTipText: pane.muted ? qsTr("Bật tiếng") : qsTr("Tắt tiếng")
+                    onClicked: pane.muteRequested()
+                }
+                StudioIconButton {
+                    iconName: "fullscreen"
+                    toolTipText: qsTr("Toàn màn hình")
+                    onClicked: pane.fullscreenRequested()
+                }
+                PlaybackSpeedButton {
+                    objectName: pane === inputPane ? "manualInputSpeedButton" : "manualResultSpeedButton"
+                    speed: root.playbackSpeed
+                    onEdited: function(value) { root.playbackSpeed = value; }
+                }
+            }
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 3
+            visible: pane.busy
+            color: Theme.outline
+            z: 6
+
+            Rectangle {
+                width: parent.width * Math.max(0.02, Math.min(1, pane.progress))
+                height: parent.height
+                color: Theme.focus
+            }
+        }
+
+        Rectangle {
+            objectName: pane === resultPane ? "audioPreparationNotice" : "sourceAudioPreparationNotice"
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: Theme.space12
+            width: Math.min(parent.width - Theme.space16, audioPreparationText.implicitWidth + Theme.space24)
+            height: 36
+            radius: Theme.radiusSmall
+            color: Theme.scrim
+            visible: pane === resultPane && root.audioPreparationBusy
+            z: 9
+
+            Text {
+                id: audioPreparationText
+                anchors.centerIn: parent
+                text: qsTr("Đang chuẩn bị âm thanh · %1%").arg(Math.round(root.previewProgress * 100))
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: Theme.caption
+                textFormat: Text.PlainText
+            }
+        }
+    }
+
+    function formatTime(secondsValue) {
+        const total = Math.max(0, Math.floor(Number(secondsValue || 0)));
+        const minutes = Math.floor(total / 60);
+        const seconds = total % 60;
+        return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+    }
+}

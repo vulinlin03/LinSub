@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "status": "owner-confirmed-application-scope",
+  "creator": "LinSub Team",
+  "copyright_notice": "Bản quyền (c) 2026 LinSub Team",
+  "notice_scope": "Only work owned by or expressly licensed to this rights holder",
+  "exclusive_ownership_verified": false,
+  "separate_or_unverified_material": [
+    {
+      "path": "src/linsub/vendor/douyin_xbogus.py",
+      "owner": "Evil0ctal",
+      "license": "Apache-2.0"
+    },
+    {
+      "path": "src/linsub/desktop/qml/icons",
+      "owner": "Microsoft and respective authors",
+      "license": "MIT, per curated notice"
+    },
+    {
+      "path": "src/linsub/assets/fonts",
+      "owner": "The Bangers Project Authors",
+      "license": "SIL OFL-1.1"
+    },
+    {
+      "path": "src/linsub/desktop/assets/branding",
+      "owner": "Redistribution rights attested by the project owner; not independently verified",
+      "license": "Owner-authorized redistribution in LinSub",
+      "permission_evidence": "legal/reviews/owner-assets-and-omnivoice-2026-10-04.md"
+    },
+    {
+      "path": "src/linsub/desktop/assets/voice_samples",
+      "owner": "Redistribution rights attested by the project owner; not independently verified",
+      "license": "Owner-authorized preview redistribution; no blanket commercial model-use permission",
+      "permission_evidence": "legal/reviews/owner-assets-and-omnivoice-2026-10-04.md"
+    },
+    {
+      "path": "runtime/bin",
+      "owner": "FFmpeg and linked-library authors",
+      "license": "GPL-3.0-or-later configured build"
+    },
+    {
+      "path": "licenses",
+      "owner": "Respective component authors",
+      "license": "Independent component terms"
+    }
+  ],
+  "contributor_permission_records": [],
+  "scope_approved_by": "LinSub Team",
+  "scope_approved_at": "2026-10-01",
+  "approved_scope": [
+    "src/linsub",
+    "scripts",
+    "installer",
+    "docs",
+    "tests"
+  ],
+  "scope_basis": "Owner states LinSub has a sole developer. Separately licensed and unverified material below remains excluded; no third-party rights assigned."
+}

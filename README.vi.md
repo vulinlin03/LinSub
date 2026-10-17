@@ -1,0 +1,113 @@
+<div align="center">
+  <img src="src/linsub/desktop/assets/branding/linsub-mark.png" width="96" alt="Logo LinSub">
+  <h1>LinSub</h1>
+  <p><strong>Ứng dụng miễn phí để tải, dịch, tạo phụ đề và lồng tiếng video trên Windows.</strong></p>
+  <p><a href="https://github.com/linsub/linsub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe">Cài đặt</a> · <a href="docs/user-guide.vi.md">Hướng dẫn sử dụng</a> · <a href="docs/support.vi.md">Trợ giúp</a> · <a href="README.md">English</a></p>
+</div>
+
+## Giới thiệu
+
+LinSub giúp bạn tải video, dịch nội dung, tạo phụ đề và lồng tiếng. Bạn có thể xử lý từng video hoặc hàng loạt, che phụ đề gốc và tạo giọng đọc cho video có nhiều người nói. Video sau khi xử lý có thể đăng lên mạng xã hội qua Zernio.
+
+Ứng dụng có chế độ Tự động để chạy các bước bạn đã chọn và trình sửa Thủ công để kiểm tra, chỉnh lại phụ đề hoặc giọng đọc trước khi xuất video.
+
+## Chức năng chính
+
+| Chức năng | Bạn có thể làm gì? |
+| --- | --- |
+| **Tải video hàng loạt** | Chọn nhiều video từ kênh hoặc trang cá nhân công khai được hỗ trợ và tải theo hàng đợi. |
+| **Dịch video** | Nhận dạng lời nói bằng Whisper; dịch bằng HY-MT2 trên máy hoặc Gemini. Sửa bản dịch trước khi xuất. |
+| **Tạo phụ đề** | Tạo phụ đề từ lời nói trong video; chỉnh nội dung, thời gian, kiểu chữ Bangers và hiệu ứng karaoke. |
+| **Lồng tiếng** | Tạo giọng đọc cho nội dung đã dịch, chọn giọng có sẵn hoặc dùng mẫu giọng bạn có quyền sử dụng. |
+| **Xử lý tự động** | Chọn ngôn ngữ, model và giọng đọc, rồi để ứng dụng chạy các bước nhận dạng, dịch, tạo giọng và che phụ đề đã chọn. |
+| **Xử lý hàng loạt** | Áp dụng thiết lập chung cho nhiều video, theo dõi tiến trình và kết quả của từng video. |
+| **Che phụ đề gốc** | Dùng OCR tìm vùng phụ đề, sau đó làm mờ hoặc vá nền để che chữ gốc. |
+| **Nhận diện nhiều người nói** | Phân nhóm người nói trong video và gán giọng đọc riêng cho từng nhóm, thay vì dùng một giọng cho cả hội thoại. |
+| **Đăng mạng xã hội** | Chọn tài khoản, chuẩn bị nội dung và đăng video qua Zernio. Có thể lấy video đã xử lý trực tiếp từ dự án. |
+
+Các công cụ trong trình sửa Thủ công chạy độc lập: không bắt buộc lồng tiếng nếu bạn chỉ cần video có phụ đề dịch.
+
+Xem trước video, chỉnh phụ đề và chọn giọng đọc phù hợp trước khi xuất hoặc đăng.
+
+## Hình ảnh giao diện
+
+[Trang chủ](#trang-chủ) · [Xử lý tự động](#xử-lý-tự-động) · [Trình sửa thủ công](#trình-sửa-thủ-công) · [Tải xuống](#tải-xuống) · [Đăng mạng xã hội](#đăng-mạng-xã-hội) · [Cài đặt](#cài-đặt)
+
+Ảnh minh họa giao diện tiếng Việt; tùy chọn và số phiên bản có thể khác ở các bản mới. Bấm vào ảnh để xem kích thước đầy đủ.
+
+### Trang chủ
+
+Tìm dự án gần đây, lọc theo loại và tạo dự án mới.
+
+![Trang chủ LinSub với các thẻ dự án và bộ lọc tìm kiếm](docs/images/screenshots/home-2026-10-11.png)
+
+### Xử lý tự động
+
+Chọn model nhận dạng, dịch và giọng đọc; thiết lập che phụ đề, âm thanh, nhạc nền và watermark.
+
+![Trang xử lý tự động với video nguồn và các thiết lập ngôn ngữ, giọng đọc](docs/images/screenshots/automatic-2026-10-14.png)
+
+### Trình sửa thủ công
+
+So sánh video nguồn và kết quả, chạy từng bước độc lập, chia đoạn trên timeline Kết quả, nhập SRT và xuất phụ đề gốc hoặc đã dịch để dùng trong phần mềm khác.
+
+![Trình sửa thủ công với preview, bảng xử lý và timeline phụ đề, âm thanh](docs/images/screenshots/manual-editor-2026-10-14.png)
+
+### Tải xuống
+
+Kiểm tra liên kết video, kênh hoặc âm thanh, xem trước danh sách và chọn các video cần tải. Ảnh minh họa một kênh Douyin.
+
+![Trang tải xuống với phiên Douyin và danh sách video có thể chọn](docs/images/screenshots/downloads.png)
+
+### Đăng mạng xã hội
+
+Thêm video đã xử lý từ dự án vào hàng đợi và chuẩn bị bài đăng cho tài khoản đã kết nối qua Zernio.
+
+![Trang đăng mạng xã hội với tài khoản, hàng đợi bài đăng và hộp chọn video từ dự án](docs/images/screenshots/social-publishing.png)
+
+### Cài đặt
+
+Chọn ngôn ngữ giao diện và chế độ CPU/GPU. Các tab còn lại quản lý API key và gói tài nguyên.
+
+![Trang cài đặt với ngôn ngữ, bộ xử lý, giữ model sẵn sàng và kiểm tra cập nhật](docs/images/screenshots/settings.png)
+
+## Dịch trên máy, không cần trả phí API theo lượt
+
+Whisper và HY-MT2 chạy trên máy sau khi cài gói tài nguyên, không cần API key hoặc phí dịch theo lượt gọi. Gemini là lựa chọn thêm nếu bạn muốn dùng dịch vụ trực tuyến.
+
+Máy không có GPU NVIDIA vẫn dùng được các lựa chọn CPU. Với GPU NVIDIA tương thích, bạn có thể chọn các model GPU. Chọn chế độ trong Cài đặt và cài các gói tương ứng với công cụ bạn muốn dùng.
+
+Gemini, Zernio và các dịch vụ bên ngoài có điều khoản, hạn mức và chi phí riêng. Giọng OmniVoice có giới hạn sử dụng nêu ở phần giấy phép bên dưới.
+
+## Cài đặt và bắt đầu
+
+**[Tải bộ cài Windows](https://github.com/linsub/linsub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe).** Chỉ mở file EXE này; không cần tải hoặc giải nén các tệp Core. Gói tài nguyên được cài trong LinSub. Bản 1.0.0 có thể cập nhật trực tiếp trong app. [Thông tin phiên bản và cài đặt](https://github.com/linsub/linsub/releases/latest).
+
+1. Cài và mở LinSub. Giao diện mặc định là tiếng Việt.
+2. Chọn CPU hoặc GPU NVIDIA trong **Cài đặt → Chung** và cài các gói cần dùng trong **Gói tài nguyên**.
+3. Tạo dự án **Tự động**, **Thủ công** hoặc **Hàng loạt**, rồi thêm video.
+4. Chọn ngôn ngữ, model và giọng đọc nếu cần. Chạy xử lý, kiểm tra kết quả rồi **Xuất** video.
+
+Ứng dụng hỗ trợ Windows 10 phiên bản 1809 trở lên và Windows 11 x64, RAM hệ thống từ 16 GB. Không cần cài Python khi dùng bộ cài. Cần thêm dung lượng cho gói tài nguyên, video và tệp xuất; bộ cài và trang Gói tài nguyên hiển thị yêu cầu tương ứng.
+
+Chế độ GPU hỗ trợ card NVIDIA loại 4 GB (CUDA báo ít nhất 3,5 GiB VRAM riêng). Với card 4 GB, chọn Whisper Small GPU, HY-MT2 CPU Q4 hoặc Gemini và OmniVoice GPU; các bước nặng chạy lần lượt, giọng đọc tạo từng câu. Whisper Turbo và HY-MT2 GPU đầy đủ cần nhiều VRAM hơn. VRAM trống và RAM hệ thống tại lúc chạy vẫn phải đủ. Bản chưa ký số có thể bị Windows Smart App Control hoặc chính sách Application Control chặn; xem [hướng dẫn cài đặt](docs/install.vi.md).
+
+Xem [hướng dẫn cài đặt](docs/install.vi.md) để chọn gói CPU/GPU, thêm API key và chọn vị trí lưu dữ liệu. Xem [hướng dẫn sử dụng](docs/user-guide.vi.md) để tạo dự án, chỉnh phụ đề, lồng tiếng và đăng bài.
+
+## Giấy phép và sử dụng thương mại
+
+LinSub miễn phí sử dụng theo [LinSub Source-Available 1.0](LICENSE). Đây không phải giấy phép nguồn mở OSI; điều kiện phân phối lại, đóng gói lại và kinh doanh phần mềm được quy định trong LICENSE.
+
+**Model OmniVoice hiện tại chỉ được cấp phép cho mục đích phi thương mại.** Không mặc định dùng model này cho quảng cáo, video kiếm tiền hoặc công việc khách hàng khi chưa có quyền phù hợp. Giấy phép của LinSub không thay thế giấy phép model.
+
+Bạn cần có quyền sử dụng video, nhạc và mẫu giọng được đưa vào ứng dụng. Xem [NOTICE](NOTICE) và [thông báo thành phần bên thứ ba](THIRD_PARTY_NOTICES.md). [Hồ sơ giấy phép](docs/licensing-review.md) và [dự thảo không có hiệu lực](legal/LICENSE-SOURCE-AVAILABLE-DRAFT.md) được lưu riêng.
+
+Ứng dụng dùng Qt/PySide theo LGPL và FFmpeg theo GPL/LGPL, tùy thành phần. [Nguồn thư viện đi kèm](https://github.com/linsub/linsub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip) và [hướng dẫn thay thư viện](docs/third-party-library-replacement.md) được cung cấp riêng; quyền theo giấy phép của các thư viện vẫn được giữ nguyên.
+
+## Hỗ trợ và đóng góp
+
+Xem [Trợ giúp](docs/support.vi.md) để quản lý tài nguyên, API key và dữ liệu. Bạn cũng có thể [gửi góp ý hoặc yêu cầu hỗ trợ](https://github.com/linsub/linsub/issues). Không gửi API key hoặc dữ liệu riêng tư.
+
+Phần cài đặt từ mã nguồn, kiểm thử và đóng gói nằm trong [hướng dẫn phát triển](docs/development.vi.md). Xem [tài liệu kỹ thuật](docs/README.vi.md) nếu bạn muốn đóng góp mã.
+
+LinSub do **LinSub Team** phát triển. Bạn có thể [đánh dấu sao repository](https://github.com/linsub/linsub) để theo dõi dự án.

@@ -1,0 +1,243 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from pydub import AudioSegment
+from pydub.generators import Sine
+
+from linsub.pipeline import audio_timeline
+
+
+class AudioTimelineIntegrityTests(unittest.TestCase):
+    def test_master_mix_preserves_stereo_at_48khz(self):
+        import wave
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "stereo.wav"
+            left = Sine(440, sample_rate=48000).to_audio_segment(duration=1000)
+            right = Sine(880, sample_rate=48000).to_audio_segment(duration=1000)
+            AudioSegment.from_mono_audiosegments(left, right).export(source, format="wav")
+            segments = root / "segments.json"
+            segments.write_text("[]", encoding="utf-8")
+            output = root / "mix.wav"
+            with mock.patch.object(audio_timeline, "get_video_duration", return_value=1.0), mock.patch.object(audio_timeline, "log_to_video"):
+                audio_timeline.build_audio_timeline(str(segments), str(root / "voices"), "source.mp4", str(output), "v",
+                                                    background_audio_path=str(source), original_video_volume=100,
+                                                    require_voice_parts=False)
+            with wave.open(str(output), "rb") as master:
+                self.assertEqual(master.getframerate(), 48000)
+                self.assertEqual(master.getnchannels(), 2)
+                self.assertEqual(master.getsampwidth(), 3)
+            channels = AudioSegment.from_file(output).split_to_mono()
+            self.assertNotEqual(channels[0].raw_data, channels[1].raw_data)
+
+    def _segments_file(self, root: Path) -> Path:
+        path = root / "segments.json"
+        path.write_text(json.dumps([{"start": 0, "end": 1, "text": "hello"}]), encoding="utf-8")
+        return path
+
+    def test_missing_required_voice_segment_fails_the_timeline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                mock.patch.object(audio_timeline, "get_video_duration", return_value=2.0),
+                mock.patch.object(audio_timeline, "log_to_video"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Missing or empty generated voice segment 1"):
+                    audio_timeline.build_audio_timeline(
+                        str(self._segments_file(root)),
+                        str(root / "voices"),
+                        str(root / "input.mp4"),
+                        str(root / "output.wav"),
+                        "video-1",
+                    )
+
+    def test_unknown_video_duration_is_not_replaced_with_fake_one_second_audio(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                mock.patch.object(audio_timeline, "get_video_duration", return_value=0.0),
+                mock.patch.object(audio_timeline, "log_to_video"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "positive source-video duration"):
+                    audio_timeline.build_audio_timeline(
+                        str(self._segments_file(root)),
+                        str(root / "voices"),
+                        str(root / "input.mp4"),
+                        str(root / "output.wav"),
+                        "video-1",
+                    )
+
+    def test_empty_transcript_cannot_create_a_background_only_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            segments = root / "segments.json"
+            segments.write_text("[]", encoding="utf-8")
+            with (
+                mock.patch.object(audio_timeline, "get_video_duration", return_value=2.0),
+                mock.patch.object(audio_timeline, "log_to_video"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "at least one translated voice"):
+                    audio_timeline.build_audio_timeline(
+                        str(segments),
+                        str(root / "voices"),
+                        str(root / "input.mp4"),
+                        str(root / "output.wav"),
+                        "video-1",
+                    )
+
+    def test_manual_compositor_can_create_a_mix_without_tts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            segments = root / "segments.json"
+            output = root / "output.wav"
+            segments.write_text("[]", encoding="utf-8")
+            with (
+                mock.patch.object(audio_timeline, "get_video_duration", return_value=0.25),
+                mock.patch.object(audio_timeline, "log_to_video"),
+                mock.patch.object(audio_timeline, "check_cancellation"),
+            ):
+                audio_timeline.build_audio_timeline(
+                    str(segments),
+                    str(root / "voices"),
+                    str(root / "input.mp4"),
+                    str(output),
+                    "video-1",
+                    require_voice_parts=False,
+                )
+
+            self.assertTrue(output.is_file())
+            self.assertGreater(output.stat().st_size, 44)
+
+    def test_source_audio_can_start_after_a_silent_timeline_gap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            segments = root / "segments.json"
+            segments.write_text("[]", encoding="utf-8")
+            source = root / "source.wav"
+            Sine(440).to_audio_segment(duration=1000).export(source, format="wav")
+            output = root / "output.wav"
+            with (
+                mock.patch.object(audio_timeline, "get_video_duration", return_value=2.0),
+                mock.patch.object(audio_timeline, "log_to_video"),
+                mock.patch.object(audio_timeline, "check_cancellation"),
+            ):
+                audio_timeline.build_audio_timeline(
+                    str(segments), str(root / "voices"), str(root / "input.mp4"),
+                    str(output), "video-1", background_audio_path=str(source),
+                    original_audio_start_ms=1000, original_audio_duration_ms=1000,
+                    require_voice_parts=False,
+                )
+            mixed = AudioSegment.from_file(output)
+            self.assertEqual(mixed[:800].rms, 0)
+            self.assertGreater(mixed[1200:1800].rms, 0)
+
+    def test_missing_required_background_track_fails_the_timeline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                mock.patch.object(audio_timeline, "get_video_duration", return_value=2.0),
+                mock.patch.object(audio_timeline, "log_to_video"),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "Required original/background audio track is missing"):
+                    audio_timeline.build_audio_timeline(
+                        str(self._segments_file(root)),
+                        str(root / "voices"),
+                        str(root / "input.mp4"),
+                        str(root / "output.wav"),
+                        "video-1",
+                        background_audio_path=str(root / "missing-background.wav"),
+                    )
+
+    def test_background_music_is_looped_to_the_video_duration(self):
+        music = AudioSegment.silent(duration=300, frame_rate=16000)
+
+        looped = audio_timeline._fit_to_duration(music, 1000)
+
+        self.assertEqual(len(looped), 1000)
+
+    def test_zero_volume_mutes_a_track_without_affecting_other_mix_inputs(self):
+        tone = AudioSegment.silent(duration=100, frame_rate=16000)
+        with mock.patch.object(audio_timeline, "log_to_video"):
+            muted = audio_timeline._apply_volume(tone, 0, "Background music", "video-1")
+
+        self.assertEqual(muted.rms, 0)
+
+    def test_ducking_lowers_music_only_around_voice(self):
+        music = Sine(440, sample_rate=16000).to_audio_segment(duration=3000)
+        ducked = audio_timeline._duck_music(music, [(1000, 1800)], -12, 180, 420)
+        self.assertEqual(len(ducked), len(music))
+        self.assertAlmostEqual(ducked[1200:1600].rms / music[1200:1600].rms, 0.251, delta=0.02)
+        self.assertAlmostEqual(ducked[100:500].rms / music[100:500].rms, 1.0, delta=0.01)
+        self.assertAlmostEqual(ducked[2600:2900].rms / music[2600:2900].rms, 1.0, delta=0.01)
+
+    def test_tempo_rounding_tail_is_trimmed_to_the_exact_slot(self):
+        audio = AudioSegment.silent(duration=1002, frame_rate=16000)
+
+        fitted = audio_timeline._trim_tempo_rounding(audio, 1000)
+
+        self.assertEqual(len(fitted), 1000)
+
+    def test_large_tempo_mismatch_is_not_silently_truncated(self):
+        audio = AudioSegment.silent(duration=1100, frame_rate=16000)
+
+        with self.assertRaisesRegex(RuntimeError, "exceeding its 1000ms slot by 100ms"):
+            audio_timeline._trim_tempo_rounding(audio, 1000)
+
+    def test_tempo_chain_supports_slowing_an_edited_subtitle_slot(self):
+        self.assertEqual(
+            audio_timeline._atempo_filters(0.25),
+            "atempo=0.5,atempo=0.500000",
+        )
+
+    def test_manual_voice_does_not_stretch_across_source_pause(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            voices = root / "voices"
+            voices.mkdir()
+            # Existence is checked before decoding; decoding itself is mocked
+            # so the test stays independent from MP3 codec availability.
+            (voices / "voice_0001.mp3").write_bytes(b"voice")
+            with (
+                mock.patch.object(audio_timeline, "get_video_duration", return_value=1.0),
+                mock.patch.object(audio_timeline, "log_to_video"),
+                mock.patch.object(audio_timeline, "check_cancellation"),
+                mock.patch.object(
+                    audio_timeline.AudioSegment,
+                    "from_file",
+                    return_value=AudioSegment.silent(duration=400, frame_rate=16000),
+                ),
+                mock.patch.object(
+                    audio_timeline,
+                    "fit_tempo_to_duration",
+                ) as fit,
+            ):
+                audio_timeline.build_audio_timeline(
+                    str(self._segments_file(root)),
+                    str(voices),
+                    str(root / "input.mp4"),
+                    str(root / "output.wav"),
+                    "video-1",
+                    require_background_audio=False,
+                    fit_voice_to_slots=True,
+                )
+
+            fit.assert_not_called()
+
+    def test_atomic_audio_replace_retries_a_transient_windows_media_lock(self):
+        locked = PermissionError(5, "Access is denied")
+        with (
+            mock.patch.object(audio_timeline.os, "replace", side_effect=[locked, locked, None]) as replace,
+            mock.patch.object(audio_timeline.time, "sleep") as sleep,
+        ):
+            audio_timeline._replace_exported_audio("new.wav", "voice_final.wav")
+
+        self.assertEqual(replace.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,4 @@
+# Source-development convenience only. Production and clean environment setup
+# use requirements-lock-py313-win64.txt with --require-hashes.
+-e .
+

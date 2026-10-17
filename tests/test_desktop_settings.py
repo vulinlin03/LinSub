@@ -1,0 +1,109 @@
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from linsub.services import desktop_settings
+
+
+class DesktopSettingsTests(unittest.TestCase):
+    def test_clean_install_defaults_to_vietnamese(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "desktop-settings.json"
+            with patch.object(desktop_settings, "SETTINGS_PATH", path):
+                self.assertEqual(desktop_settings.load_settings()["language"], "vi")
+                self.assertEqual(desktop_settings.save_settings({"keep_models_warm": False})["language"], "vi")
+
+    def test_existing_english_preference_is_preserved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "desktop-settings.json"
+            path.write_text(json.dumps({"language": "en"}), encoding="utf-8")
+            with patch.object(desktop_settings, "SETTINGS_PATH", path):
+                self.assertEqual(desktop_settings.load_settings()["language"], "en")
+                self.assertEqual(desktop_settings.save_settings({"keep_models_warm": False})["language"], "en")
+
+    def test_invalid_or_corrupt_language_defaults_to_vietnamese(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "desktop-settings.json"
+            with patch.object(desktop_settings, "SETTINGS_PATH", path):
+                path.write_text("{broken", encoding="utf-8")
+                self.assertEqual(desktop_settings.load_settings()["language"], "vi")
+                for value in (None, "invalid", ""):
+                    with self.subTest(value=value):
+                        path.write_text(json.dumps({"language": value}), encoding="utf-8")
+                        self.assertEqual(desktop_settings.load_settings()["language"], "vi")
+                        self.assertEqual(desktop_settings.save_settings({"language": value})["language"], "vi")
+
+    def test_translation_model_save_preserves_explicit_device_choice(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "desktop-settings.json"
+            path.write_text(json.dumps({"processing_device": "cpu", "processing_device_origin": "manual"}), encoding="utf-8")
+            with patch.object(desktop_settings, "SETTINGS_PATH", path):
+                loaded = desktop_settings.load_settings()
+                saved = desktop_settings.save_settings({"translation_model": "q4"})
+                reread = desktop_settings.load_settings()
+
+        self.assertEqual(loaded["processing_device_origin"], "manual")
+        self.assertEqual(saved["translation_model"], "q4")
+        self.assertEqual(reread["translation_model"], "q4")
+
+    def test_partial_update_preserves_warm_and_cache_preferences(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "desktop-settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        **desktop_settings.DEFAULT_SETTINGS,
+                        "keep_models_warm": False,
+                        "manual_project_cache_gib": 7,
+                        "manual_global_cache_gib": 28,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(desktop_settings, "SETTINGS_PATH", path):
+                saved = desktop_settings.save_settings({"processing_device": "gpu"})
+                loaded = desktop_settings.load_settings()
+
+        self.assertEqual(saved["processing_device"], "gpu")
+        self.assertFalse(loaded["keep_models_warm"])
+        self.assertEqual(loaded["manual_project_cache_gib"], 7)
+        self.assertEqual(loaded["manual_global_cache_gib"], 28)
+
+    def test_invalid_cache_limits_are_safely_bounded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "desktop-settings.json"
+            with patch.object(desktop_settings, "SETTINGS_PATH", path):
+                saved = desktop_settings.save_settings(
+                    {"manual_project_cache_gib": "bad", "manual_global_cache_gib": -20}
+                )
+        self.assertEqual(saved["manual_project_cache_gib"], 4)
+        self.assertEqual(saved["manual_global_cache_gib"], 4)
+
+    def test_obsolete_font_picker_preferences_are_not_saved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "desktop-settings.json"
+            with patch.object(desktop_settings, "SETTINGS_PATH", path):
+                desktop_settings.save_settings(
+                    {
+                        "editor_recent_fonts": ["Segoe UI", "Bangers"],
+                        "editor_favorite_fonts": ["Bangers", "Arial"],
+                    }
+                )
+                desktop_settings.save_settings({"language": "vi"})
+                loaded = desktop_settings.load_settings()
+
+        self.assertNotIn("editor_recent_fonts", loaded)
+        self.assertNotIn("editor_favorite_fonts", loaded)
+        self.assertEqual(loaded["language"], "vi")
+
+
+if __name__ == "__main__":
+    unittest.main()

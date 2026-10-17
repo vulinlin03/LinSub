@@ -1,0 +1,354 @@
+"""Create release metadata and a SHA-256 manifest for a frozen artifact."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+
+
+def _git_value(*arguments: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *arguments],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return completed.stdout.strip() if completed.returncode == 0 else "unknown"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while chunk := file.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_manifest(artifact_directory: Path, *, core_markers: bool = False) -> None:
+    artifact = artifact_directory.resolve()
+    manifest_path = artifact / "SHA256SUMS.txt"
+    if not manifest_path.is_file():
+        raise RuntimeError(f"Release checksum manifest is missing: {manifest_path}")
+    expected: dict[str, str] = {}
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        digest, separator, relative = line.partition(" *")
+        if not separator or len(digest) != 64 or not relative:
+            raise RuntimeError(f"Invalid checksum manifest line: {line!r}")
+        if relative in expected:
+            raise RuntimeError(f"Duplicate checksum manifest entry: {relative}")
+        expected[relative] = digest
+    actual = {
+        path.relative_to(artifact).as_posix(): path
+        for path in artifact.rglob("*")
+        if path.is_file() and path != manifest_path
+        and not (core_markers and path.name in {"core-manifest.json", "core-complete.json"} and path.parent == artifact)
+    }
+    if set(expected) != set(actual):
+        missing = sorted(set(actual) - set(expected))
+        stale = sorted(set(expected) - set(actual))
+        raise RuntimeError(f"Checksum manifest file set mismatch; missing={missing[:3]}, stale={stale[:3]}")
+    for relative, path in actual.items():
+        if _sha256(path) != expected[relative]:
+            raise RuntimeError(f"Checksum mismatch: {relative}")
+    print(f"Release manifest verified: {len(actual)} files", flush=True)
+
+
+def _release_version() -> str:
+    return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+
+
+def _read_build_info(artifact: Path) -> dict[str, object]:
+    path = artifact / "BUILD-INFO.json"
+    if not path.is_file():
+        raise RuntimeError(f"Release build metadata is missing: {path}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Release build metadata is invalid: {path}") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("Release build metadata must be a JSON object.")
+    return value
+
+
+def _require_build_value(build_info: dict[str, object], name: str, expected: object) -> None:
+    if build_info.get(name) != expected:
+        raise RuntimeError(
+            f"Release build metadata is not eligible for installer packaging: "
+            f"{name}={build_info.get(name)!r}, expected {expected!r}"
+        )
+
+
+def verify_installer_eligibility(artifact_directory: Path, *, engineering: bool = False) -> None:
+    """Reject a stale, partial, dirty, or differently-versioned frozen build.
+
+    A checksum proves files did not change after finalization. This gate also
+    proves that they were finalised from this clean source revision. AI engine
+    and model payloads are intentionally forbidden because Resource Manager owns them.
+    """
+    artifact = artifact_directory.resolve()
+    build_info = _read_build_info(artifact)
+    if str(SRC) not in sys.path:
+        sys.path.insert(0, str(SRC))
+    from linsub.update.filesystem import no_links
+    from linsub.update.state import Layout
+    no_links(artifact)
+    if build_info.get("layout") == "versioned":
+        verify_manifest(artifact)
+        if build_info.get("engineering") != engineering:
+            raise RuntimeError("Versioned engineering provenance does not match the installer mode.")
+        if (artifact / "runtime").exists() or (artifact / "update-state").exists():
+            raise RuntimeError("Mutable data must not be packaged in a versioned installer.")
+        layout = Layout(artifact)
+        layout.validate_core(str(build_info.get("version")))
+        for executable in (artifact / "LinSub.exe", artifact / "updater" / "LinSubUpdater.exe"):
+            if not executable.is_file() or not (executable.parent / "_internal").is_dir():
+                raise RuntimeError("Independent bootstrap is incomplete.")
+        verify_installer_eligibility(layout.core(build_info["version"]), engineering=engineering)
+        return
+    core_markers = artifact.parent.name == "versions" and (artifact / "core-complete.json").is_file()
+    if core_markers:
+        Layout(artifact.parent.parent).validate_core(artifact.name)
+    verify_manifest(artifact, core_markers=core_markers)
+
+    if str(SRC) not in sys.path:
+        sys.path.insert(0, str(SRC))
+    from linsub.core.model_integrity import (
+        DEMUCS_MODEL_SHA256,
+        ALIGNMENT_MODELS,
+        DEMUCS_MODEL_FILE,
+        DEMUCS_MODEL_SIZE,
+        HYMT2_CPU_FILE,
+        HYMT2_CPU_REVISION,
+        HYMT2_GPU_FILES,
+        HYMT2_GPU_REVISION,
+        OMNIVOICE_FILES,
+        OMNIVOICE_REVISION,
+        OMNIVOICE_RUNTIME_FILES,
+        SUBTITLE_OCR_FILES,
+        SUBTITLE_OCR_REVISION,
+        WHISPER_FILES,
+        WHISPER_REVISION,
+        WHISPER_TURBO_FILES,
+        WHISPER_TURBO_REVISION,
+        WHISPERX_VAD_FILE,
+        WHISPERX_VAD_SIZE,
+    )
+
+    current_commit = _git_value("rev-parse", "HEAD")
+    current_status = _git_value("status", "--porcelain")
+    if current_commit == "unknown":
+        raise RuntimeError("Cannot establish the current Git commit; refusing installer packaging.")
+    if current_status == "unknown":
+        raise RuntimeError("Cannot establish Git worktree status; refusing installer packaging.")
+    if current_status and not engineering:
+        raise RuntimeError("Git worktree is dirty; refusing installer packaging.")
+
+    for name, expected in (
+        ("application", "LinSub"),
+        ("version", _release_version()),
+        ("build_id", f"{_release_version()}+{current_commit[:12]}"),
+        ("git_commit", current_commit),
+        ("git_dirty", bool(current_status) if engineering else False),
+        ("packaging", "PyInstaller onedir"),
+        ("model_delivery", "resource-packs"),
+        ("model_storage", "external-resource-root"),
+        ("bundled_cpu_model", False),
+        ("bundled_gpu_model", False),
+        ("bundled_whisper_model", False),
+        ("bundled_whisper_turbo_model", False),
+        ("bundled_omnivoice_model", False),
+        ("bundled_demucs_model", False),
+        ("bundled_alignment_models", False),
+        ("bundled_subtitle_ocr_models", False),
+        ("hymt2_cpu_revision", HYMT2_CPU_REVISION),
+        ("hymt2_gpu_revision", HYMT2_GPU_REVISION),
+        ("whisper_revision", WHISPER_REVISION),
+        ("whisper_turbo_revision", WHISPER_TURBO_REVISION),
+        ("omnivoice_revision", OMNIVOICE_REVISION),
+        ("demucs_model_sha256", DEMUCS_MODEL_SHA256),
+        ("subtitle_ocr_revision", SUBTITLE_OCR_REVISION),
+        (
+            "alignment_model_sha256",
+            {language: digest for language, (_bundle_name, _filename, _size, digest) in ALIGNMENT_MODELS.items()},
+        ),
+    ):
+        _require_build_value(build_info, name, expected)
+
+    entrypoint = build_info.get("entrypoint", "LinSub.exe")
+    if entrypoint not in {"LinSub.exe", "LinSubCore.exe"}:
+        raise RuntimeError("Invalid frozen entrypoint.")
+    required_paths = (artifact / entrypoint,)
+    missing = [str(path.relative_to(artifact)) for path in required_paths if not path.is_file()]
+    if missing:
+        raise RuntimeError(f"Required release payload is missing: {', '.join(missing)}")
+    for directory in ("runtime", "update-state"):
+        if (artifact / directory).exists():
+            raise RuntimeError(
+                f"Mutable root {directory} must not be present in the frozen artifact; "
+                "the installer creates and preserves it separately."
+            )
+    model_root = artifact / "_internal" / "models"
+    from linsub.core.bundled_models import MODEL_SHA256, verify_core_models
+    has_speaker = verify_core_models(model_root, required=bool(build_info.get("bundled_speaker_model")))
+    if has_speaker:
+        _require_build_value(build_info, "bundled_speaker_model", True)
+        _require_build_value(build_info, "speaker_model_sha256", MODEL_SHA256)
+    forbidden_model_files = {
+        (filename.lower(), size)
+        for filename, (size, _digest) in {
+            **WHISPER_FILES,
+            **WHISPER_TURBO_FILES,
+            **HYMT2_GPU_FILES,
+            **OMNIVOICE_FILES,
+            **OMNIVOICE_RUNTIME_FILES,
+        }.items()
+    }
+    forbidden_model_files.update(
+        {
+            (HYMT2_CPU_FILE.lower(), 1_133_080_448),
+            (DEMUCS_MODEL_FILE.lower(), DEMUCS_MODEL_SIZE),
+            (WHISPERX_VAD_FILE.lower(), WHISPERX_VAD_SIZE),
+            *((filename.lower(), size) for _bundle, filename, size, _digest in ALIGNMENT_MODELS.values()),
+        }
+    )
+    forbidden_model_files.update((filename.lower(), size) for filename, (size, _digest) in SUBTITLE_OCR_FILES.items())
+    # RapidOCR's wheel includes unpinned default ONNX files.  The executable
+    # may carry the library and its YAML configuration, never its model data.
+    forbidden_model_files.update(
+        {
+            ("ch_pp-ocrv4_det_infer.onnx", 4_745_517),
+            ("ch_pp-ocrv4_rec_infer.onnx", 10_855_758),
+            ("ch_ppocr_mobile_v2.0_cls_infer.onnx", 585_532),
+        }
+    )
+    accidental_models = [
+        path.relative_to(artifact).as_posix()
+        for path in artifact.rglob("*")
+        if path.is_file() and (path.name.lower(), path.stat().st_size) in forbidden_model_files
+    ]
+    if accidental_models:
+        raise RuntimeError(
+            "Known model payload must not be bundled in the installer: " + ", ".join(accidental_models[:5])
+        )
+    print("Release artifact is eligible for installer packaging.", flush=True)
+
+
+def finalize(artifact_directory: Path) -> None:
+    artifact = artifact_directory.resolve()
+    executable = artifact / "LinSub.exe"
+    if not executable.is_file():
+        executable = artifact / "LinSubCore.exe"
+    if not executable.is_file():
+        raise RuntimeError(f"Frozen executable is missing: {executable}")
+
+    if str(SRC) not in sys.path:
+        sys.path.insert(0, str(SRC))
+    from linsub.core.model_integrity import (
+        ALIGNMENT_MODELS,
+        DEMUCS_MODEL_SHA256,
+        HYMT2_CPU_REVISION,
+        HYMT2_GPU_REVISION,
+        OMNIVOICE_REVISION,
+        SUBTITLE_OCR_REVISION,
+        WHISPER_REVISION,
+        WHISPER_TURBO_REVISION,
+    )
+
+    version = _release_version()
+    from linsub.core.bundled_models import MODEL_SHA256, verify_core_models
+    has_speaker = verify_core_models(artifact / "_internal" / "models", required=False)
+    git_commit = _git_value("rev-parse", "HEAD")
+    if git_commit == "unknown":
+        raise RuntimeError("Cannot establish the current Git commit; refusing to finalize the release artifact.")
+    build_info = {
+        "application": "LinSub",
+        "version": version,
+        "build_id": f"{version}+{git_commit[:12]}",
+        "built_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "git_commit": git_commit,
+        "git_branch": _git_value("branch", "--show-current"),
+        "git_dirty": bool(_git_value("status", "--porcelain")),
+        "python": sys.version.split()[0],
+        "model_delivery": "resource-packs",
+        "model_storage": "external-resource-root",
+        "bundled_cpu_model": False,
+        "bundled_gpu_model": False,
+        "bundled_whisper_model": False,
+        "bundled_whisper_turbo_model": False,
+        "bundled_omnivoice_model": False,
+        "bundled_demucs_model": False,
+        "bundled_alignment_models": False,
+        "bundled_subtitle_ocr_models": False,
+        "bundled_speaker_model": has_speaker,
+        "speaker_model_sha256": MODEL_SHA256 if has_speaker else None,
+        "hymt2_cpu_revision": HYMT2_CPU_REVISION,
+        "hymt2_gpu_revision": HYMT2_GPU_REVISION,
+        "whisper_revision": WHISPER_REVISION,
+        "whisper_turbo_revision": WHISPER_TURBO_REVISION,
+        "omnivoice_revision": OMNIVOICE_REVISION,
+        "demucs_model_sha256": DEMUCS_MODEL_SHA256,
+        "subtitle_ocr_revision": SUBTITLE_OCR_REVISION,
+        "alignment_model_sha256": {
+            language: digest for language, (_bundle_name, _filename, _size, digest) in ALIGNMENT_MODELS.items()
+        },
+        "packaging": "PyInstaller onedir",
+        "entrypoint": "LinSubCore.exe" if (artifact / "LinSubCore.exe").is_file() else "LinSub.exe",
+    }
+    (artifact / "BUILD-INFO.json").write_text(
+        json.dumps(build_info, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    manifest_path = artifact / "SHA256SUMS.txt"
+    files = sorted(
+        (path for path in artifact.rglob("*") if path.is_file() and path != manifest_path),
+        key=lambda path: path.relative_to(artifact).as_posix().lower(),
+    )
+    lines = []
+    for index, path in enumerate(files, start=1):
+        relative = path.relative_to(artifact).as_posix()
+        lines.append(f"{_sha256(path)} *{relative}")
+        if index % 500 == 0:
+            print(f"Hashed {index}/{len(files)} release files", flush=True)
+    manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Release metadata finalized: {len(files)} files", flush=True)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--artifact", type=Path, required=True)
+    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--verify-installer-eligibility", action="store_true")
+    parser.add_argument("--engineering", action="store_true",
+                        help="Allow dirty provenance only for explicitly labelled internal test installers")
+    args = parser.parse_args(argv)
+    if args.verify and args.verify_installer_eligibility:
+        parser.error("--verify and --verify-installer-eligibility cannot be combined")
+    if args.verify:
+        verify_manifest(args.artifact)
+    elif args.verify_installer_eligibility:
+        verify_installer_eligibility(args.artifact, engineering=args.engineering)
+    else:
+        finalize(args.artifact)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

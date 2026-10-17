@@ -1,0 +1,42 @@
+LinSub
+Bản quyền (c) 2026 LinSub Team.
+LinSub do LinSub Team phát triển.
+Phần mã thuộc sở hữu: LicenseRef-LinSub-Source-Available-1.0; xem LICENSE.
+Không được phân phối lại, đóng gói lại, bán, cho thuê hoặc mạo nhận phần mềm
+khi chưa được chủ sở hữu chấp thuận bằng văn bản, trừ các quyền độc lập
+và ngoại lệ bắt buộc được quy định trong LICENSE.
+Thành phần bên thứ ba giữ giấy phép riêng: THIRD_PARTY_NOTICES.md và licenses/.
+
+Copyright (c) 2026 LinSub Team.
+LinSub is developed by LinSub Team.
+Owned LinSub work: LicenseRef-LinSub-Source-Available-1.0; see LICENSE.
+Redistribution, repackaging, sale, rental and false attribution of the software
+require the owner's written consent, subject to independent permissions and
+mandatory exceptions specified in LICENSE.
+Third-party components remain separately licensed; see THIRD_PARTY_NOTICES.md
+and licenses/. The application license does not override their permissions.
+
+Official repository: https://github.com/linsub/linsub
+Official website: https://linsub.pages.dev/
+Contact: support@linsub.com
+
+Bundled font: Bangers, Copyright 2010 The Bangers Project Authors,
+licensed under SIL Open Font License 1.1; see licenses/Bangers-OFL.txt.
+
+Qt, PySide and Shiboken are used as dynamically linked components under LGPLv3.
+Their independent modification, replacement and required debugging rights are
+preserved. See licenses/, the release's ThirdPartySources archive and
+docs/third-party-library-replacement.md in the source repository.
+The separately executed FFmpeg CLI is GPLv3; its independent terms and sources
+are described in licenses/FFmpeg-NOTICE.md. Media backends linked into Qt and
+the Python engines are separately inventoried LGPL builds.
+
+Douyin native signing contains adapted Apache-2.0 source from:
+Douyin_TikTok_Download_API
+Copyright 2021-2026 Evil0ctal and contributors
+https://github.com/Evil0ctal/Douyin_TikTok_Download_API
+The owned-browser SDK capture also adapts that project's Cloak backend at the
+same pinned revision. Changes and optional CloakBrowser licensing restrictions
+are documented in licenses/DOUYIN-CHANNEL-IMPORT-NOTICE.md.
+See licenses/DOUYIN-CHANNEL-IMPORT-NOTICE.md for the pinned revision,
+LinSub modifications, retained upstream notice and license text.

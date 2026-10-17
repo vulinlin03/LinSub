@@ -1,0 +1,487 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+import uuid
+from datetime import datetime
+from pathlib import Path
+from unittest import mock
+
+from linsub.schemas.video import VIDEO_METADATA_SCHEMA_VERSION, VideoConfig, MediaSource
+from linsub.services import video_store, project_store
+
+
+class ProjectIndexRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.original_index = project_store.PROJECT_INDEX_PATH
+        project_store.PROJECT_INDEX_PATH = str(self.root / "runtime" / "projects.json")
+
+    def tearDown(self):
+        project_store.PROJECT_INDEX_PATH = self.original_index
+        self.temp.cleanup()
+
+    def test_corrupt_index_recovers_backup_and_newer_manifests(self):
+        projects_dir = self.root / "projects"
+        first = project_store.ensure_project("First", str(projects_dir), "single")
+        second = project_store.ensure_project("Second", str(projects_dir), "batch")
+        index_path = Path(project_store.PROJECT_INDEX_PATH)
+        self.assertTrue(Path(f"{index_path}.bak").is_file())
+
+        index_path.write_text("{broken", encoding="utf-8")
+        recovered = project_store.list_projects()
+
+        self.assertEqual({item["key"] for item in recovered}, {first["key"], second["key"]})
+        self.assertIsInstance(json.loads(index_path.read_text(encoding="utf-8")), list)
+        self.assertEqual(len(tuple(index_path.parent.glob("projects.json.corrupt-*"))), 1)
+
+    def test_corrupt_first_index_rebuilds_from_project_manifest(self):
+        project = project_store.ensure_project("Manifest only", str(self.root / "projects"), "single")
+        index_path = Path(project_store.PROJECT_INDEX_PATH)
+        Path(f"{index_path}.bak").unlink(missing_ok=True)
+        index_path.write_text("not-json", encoding="utf-8")
+
+        recovered = project_store.list_projects()
+
+        self.assertEqual([item["key"] for item in recovered], [project["key"]])
+
+    def test_unrecoverable_index_is_not_replaced_with_an_empty_list(self):
+        index_path = Path(project_store.PROJECT_INDEX_PATH)
+        index_path.parent.mkdir(parents=True)
+        index_path.write_text("not-json", encoding="utf-8")
+
+        with self.assertRaises(project_store.ProjectMetadataError):
+            project_store.list_projects()
+
+        self.assertEqual(index_path.read_text(encoding="utf-8"), "not-json")
+
+    def test_concurrent_processes_do_not_lose_project_records(self):
+        root = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(root / "src")
+        projects_dir = self.root / "projects"
+        processes = []
+        for number in range(4):
+            code = "\n".join(
+                (
+                    "from linsub.services import project_store",
+                    f"project_store.PROJECT_INDEX_PATH = {project_store.PROJECT_INDEX_PATH!r}",
+                    f"project_store.ensure_project('Concurrent {number}', {str(projects_dir)!r}, 'single')",
+                )
+            )
+            processes.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", code],
+                    cwd=root,
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            )
+        for process in processes:
+            output, errors = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, output + errors)
+
+        self.assertEqual(len(project_store.list_projects()), 4)
+
+    def test_project_v1_migrates_sequentially_with_backups(self):
+        projects_dir = self.root / "projects"
+        project_root = projects_dir / "Legacy"
+        project_root.mkdir(parents=True)
+        record = {
+            "project_name": "Legacy",
+            "project_directory": str(projects_dir),
+            "project_root": str(project_root),
+            "project_type": "single",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+        index_path = Path(project_store.PROJECT_INDEX_PATH)
+        index_path.parent.mkdir(parents=True)
+        index_path.write_text(json.dumps([record]), encoding="utf-8")
+        manifest_path = project_root / project_store.PROJECT_MANIFEST_NAME
+        manifest_path.write_text(json.dumps(record), encoding="utf-8")
+
+        migrated = project_store.list_projects()[0]
+
+        self.assertEqual(migrated["schema_version"], project_store.PROJECT_SCHEMA_VERSION)
+        self.assertEqual(migrated["metadata_type"], project_store.PROJECT_METADATA_TYPE)
+        self.assertTrue(Path(f"{index_path}.schema-migration.bak").is_file())
+        self.assertTrue(Path(f"{manifest_path}.schema-migration.bak").is_file())
+        self.assertEqual(
+            json.loads(manifest_path.read_text(encoding="utf-8"))["schema_version"],
+            project_store.PROJECT_SCHEMA_VERSION,
+        )
+
+    def test_future_project_schema_is_rejected_without_rewrite(self):
+        index_path = Path(project_store.PROJECT_INDEX_PATH)
+        index_path.parent.mkdir(parents=True)
+        future = [{"schema_version": project_store.PROJECT_SCHEMA_VERSION + 1}]
+        index_path.write_text(json.dumps(future), encoding="utf-8")
+
+        with self.assertRaises(project_store.UnsupportedProjectSchemaError):
+            project_store.list_projects()
+
+        self.assertEqual(json.loads(index_path.read_text(encoding="utf-8")), future)
+
+
+class VideoMetadataMigrationTests(unittest.TestCase):
+    def test_media_source_rejects_unknown_provenance_type(self):
+        with self.assertRaises(ValueError):
+            MediaSource(type="untrusted")
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.original_index = project_store.PROJECT_INDEX_PATH
+        self.original_videos = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+        project_store.PROJECT_INDEX_PATH = str(self.root / "runtime" / "projects.json")
+        video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(self.root / "legacy-videos")
+
+    def tearDown(self):
+        project_store.PROJECT_INDEX_PATH = self.original_index
+        video_store.LEGACY_VIDEO_WORKSPACES_DIR = self.original_videos
+        self.temp.cleanup()
+
+    def _create_video(self):
+        name = f"Migration-{uuid.uuid4().hex}"
+        project_store.ensure_project(name, str(self.root / "projects"), "single")
+        return video_store.create_video(
+            uuid.uuid4().hex,
+            "source.mp4",
+            VideoConfig(project_name=name, project_directory=str(self.root / "projects")),
+        )
+
+    def test_unversioned_video_metadata_migrates_and_preserves_original(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy.pop("schema_version")
+        legacy.pop("metadata_type")
+        legacy["mode"] = "B"
+        legacy["source_language"] = "en"
+        legacy["translator_provider"] = "ollama"
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        backup = json.loads(Path(f"{path}.schema-migration.bak").read_text(encoding="utf-8"))
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.mode, "A")
+        self.assertEqual(migrated.source_language, "auto")
+        self.assertEqual(migrated.translator_provider, "hymt2")
+        self.assertEqual(migrated.media_source.type, "local_file")
+        self.assertEqual(saved["metadata_type"], "linsub.video")
+        self.assertEqual(saved["media_source"]["type"], "local_file")
+        self.assertNotIn("schema_version", backup)
+
+    def test_v4_job_metadata_is_upgraded_to_video_metadata_without_data_loss(self):
+        video = self._create_video()
+        video_path = Path(video_store.get_video_json_path(video.video_id))
+        legacy_path = video_path.with_name("job.json")
+        legacy = json.loads(video_path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 4
+        legacy["job_id"] = legacy.pop("video_id")
+        legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+        video_path.unlink()
+
+        migrated = video_store.get_video(video.video_id)
+        saved = json.loads(video_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(migrated.video_id, video.video_id)
+        self.assertEqual(saved["video_id"], video.video_id)
+        self.assertNotIn("job_id", saved)
+        self.assertEqual(saved["schema_version"], VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertTrue(Path(f"{legacy_path}.legacy.bak").is_file())
+
+    def test_current_schema_repairs_legacy_enum_values(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy.update(
+            {
+                "mode": "B",
+                "translator_provider": "ollama",
+                "output_format": "legacy-square",
+                "project_type": "job",
+                "original_video_volume": 999,
+                "background_music_volume": -4,
+                "tts_volume": 444,
+                "subtitle_style": {"font_size": -2, "position_y_percent": 999},
+                "crop": {"zoom_percent": 0, "pan_x_percent": -999},
+                "original_subtitle_removal_mode": "inpaint",
+            }
+        )
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(migrated.mode, "A")
+        self.assertEqual(migrated.translator_provider, "hymt2")
+        self.assertEqual(migrated.output_format, "keep_ratio")
+        self.assertEqual(migrated.project_type, "single")
+        self.assertEqual(migrated.original_video_volume, 100)
+        self.assertEqual(migrated.background_music_volume, 0)
+        self.assertEqual(migrated.tts_volume, 100)
+        self.assertEqual(migrated.subtitle_style.font_size, 10)
+        self.assertEqual(migrated.subtitle_style.position_y_percent, 100)
+        self.assertEqual(migrated.crop.zoom_percent, 1)
+        self.assertEqual(migrated.crop.pan_x_percent, -100)
+        self.assertEqual(migrated.original_subtitle_removal_mode, "patch")
+        self.assertEqual(saved["translator_provider"], "hymt2")
+        self.assertTrue(Path(f"{path}.schema-migration.bak").is_file())
+
+    def test_v5_metadata_gets_safe_audio_mix_defaults(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 5
+        legacy.pop("background_music_volume", None)
+        legacy.pop("tts_volume", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.background_music_volume, 30)
+        self.assertEqual(migrated.tts_volume, 100)
+
+    def test_v6_metadata_gets_a_safe_empty_watermark(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 6
+        legacy.pop("watermark_text", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.watermark_text, "")
+
+    def test_v7_metadata_gets_a_safe_empty_batch_import_order(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 7
+        legacy.pop("batch_import_order", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.batch_import_order, 0)
+
+    def test_v8_metadata_enables_original_subtitle_removal_without_manual_layout(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 8
+        legacy.pop("remove_original_subtitles", None)
+        legacy.pop("subtitle_layout_override", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertTrue(migrated.remove_original_subtitles)
+        self.assertFalse(migrated.subtitle_layout_override)
+
+    def test_v10_metadata_keeps_blur_as_the_compatible_removal_mode(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 10
+        legacy.pop("original_subtitle_removal_mode", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.original_subtitle_removal_mode, "blur")
+
+    def test_invalid_current_removal_mode_falls_back_to_nearby_patch(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        current = json.loads(path.read_text(encoding="utf-8"))
+        current["original_subtitle_removal_mode"] = "unknown"
+        path.write_text(json.dumps(current), encoding="utf-8")
+
+        recovered = video_store.get_video(video.video_id)
+
+        self.assertEqual(recovered.original_subtitle_removal_mode, "patch")
+
+    def test_v11_metadata_moves_existing_projects_to_omnivoice(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 11
+        legacy.pop("tts_provider", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.tts_provider, "omnivoice")
+
+    def test_v13_metadata_defaults_to_one_narrator_voice(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 13
+        legacy.pop("speaker_mode", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.speaker_mode, "single")
+
+    def test_v15_manual_progress_migrates_to_independent_modules(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 15
+        legacy["project_type"] = "manual"
+        legacy["manual_completed_stage"] = "voice"
+        legacy.pop("manual_completed_stages", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(
+            migrated.manual_completed_stages,
+            ["translation", "subtitles", "voice"],
+        )
+
+    def test_v9_metadata_preserves_the_visible_finished_session_duration(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        legacy = json.loads(path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 9
+        legacy["status"] = "paused"
+        legacy["started_at"] = "2026-08-13T01:00:00Z"
+        legacy["updated_at"] = "2026-08-13T01:02:30Z"
+        legacy.pop("processing_elapsed_seconds", None)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.schema_version, VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertEqual(migrated.processing_elapsed_seconds, 150.0)
+        self.assertIsNone(migrated.started_at)
+
+    def test_processing_time_accumulates_once_for_each_resumed_session(self):
+        video = self._create_video()
+        first_started = "2026-08-13T01:00:00Z"
+        with mock.patch.object(
+            video_store,
+            "datetime",
+            wraps=video_store.datetime,
+        ) as mocked_datetime:
+            mocked_datetime.now.return_value = datetime.fromisoformat("2026-08-13T01:00:10+00:00")
+            video_store.update_video(
+                video.video_id,
+                status="processing",
+                started_at=first_started,
+            )
+            paused = video_store.update_video(video.video_id, status="paused")
+            repeated = video_store.update_video(video.video_id, status="paused")
+
+        self.assertEqual(paused.processing_elapsed_seconds, 10.0)
+        self.assertEqual(repeated.processing_elapsed_seconds, 10.0)
+        self.assertIsNone(repeated.started_at)
+
+        with mock.patch.object(
+            video_store,
+            "datetime",
+            wraps=video_store.datetime,
+        ) as mocked_datetime:
+            mocked_datetime.now.return_value = datetime.fromisoformat("2026-08-13T01:01:05+00:00")
+            video_store.update_video(
+                video.video_id,
+                status="processing",
+                started_at="2026-08-13T01:01:00Z",
+            )
+            finished = video_store.update_video(video.video_id, status="done")
+
+        self.assertEqual(finished.processing_elapsed_seconds, 15.0)
+        self.assertIsNone(finished.started_at)
+
+    def test_current_metadata_normalizes_unsafe_watermark_text(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        current = json.loads(path.read_text(encoding="utf-8"))
+        current["watermark_text"] = "  LinSub\n" + ("x" * 100)
+        path.write_text(json.dumps(current), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.watermark_text, "LinSub " + ("x" * 71))
+
+    def test_current_metadata_clamps_manual_watermark_scale(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        current = json.loads(path.read_text(encoding="utf-8"))
+        current["watermark_scale_percent"] = 900
+        path.write_text(json.dumps(current), encoding="utf-8")
+
+        migrated = video_store.get_video(video.video_id)
+
+        self.assertEqual(migrated.watermark_scale_percent, 300)
+
+    def test_current_metadata_accepts_nested_manual_file_metadata(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        current = json.loads(path.read_text(encoding="utf-8"))
+        current["files"]["tts_narrator_anchors"] = {
+            "voice-signature": "Đoạn neo giọng ổn định"
+        }
+        path.write_text(json.dumps(current), encoding="utf-8")
+
+        loaded = video_store.get_video(video.video_id)
+
+        self.assertEqual(
+            loaded.files["tts_narrator_anchors"],
+            {"voice-signature": "Đoạn neo giọng ổn định"},
+        )
+
+    def test_catalog_skips_one_unreadable_video_instead_of_crashing(self):
+        healthy = self._create_video()
+        with (
+            mock.patch.object(video_store, "_project_video_ids", return_value=["broken", healthy.video_id]),
+            mock.patch.object(
+                video_store,
+                "get_video",
+                side_effect=[RuntimeError("corrupt metadata"), healthy],
+            ),
+        ):
+            listed = video_store.list_videos()
+
+        self.assertEqual([item.video_id for item in listed], [healthy.video_id])
+
+    def test_future_video_schema_is_rejected_without_falling_back(self):
+        video = self._create_video()
+        path = Path(video_store.get_video_json_path(video.video_id))
+        future = json.loads(path.read_text(encoding="utf-8"))
+        future["schema_version"] = VIDEO_METADATA_SCHEMA_VERSION + 1
+        path.write_text(json.dumps(future), encoding="utf-8")
+
+        with self.assertRaises(RuntimeError):
+            video_store.get_video(video.video_id)
+
+        self.assertEqual(
+            json.loads(path.read_text(encoding="utf-8"))["schema_version"],
+            VIDEO_METADATA_SCHEMA_VERSION + 1,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,1342 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from linsub.pipeline import transcribe
+from linsub.pipeline.process_video import _timing_file_is_current
+from linsub.pipeline.subtitle import generate_srt, split_segment_into_cues
+from linsub.schemas.video import VideoConfig
+from linsub.services import hymt2_worker, video_store, translation
+from linsub.services.hymt2_worker import (
+    _build_prompt,
+    _build_translation_prompts,
+    _clean_single_translation,
+    _context_after_end,
+    _context_before_start,
+    _context_indices,
+    _inference_batches,
+    _output_token_budget,
+)
+
+
+class _LanguageModel:
+    def __init__(self, languages):
+        self.languages = iter(languages)
+        self.clip_lengths = []
+
+    def detect_language(self, **kwargs):
+        self.clip_lengths.append(len(kwargs["audio"]))
+        language, confidence = next(self.languages)
+        return language, confidence, [(language, confidence)]
+
+
+class _AsrModel:
+    def __init__(self, languages):
+        self.model = _LanguageModel(languages)
+
+
+class MixedLanguagePipelineTests(unittest.TestCase):
+    def setUp(self):
+        # These tests verify recognition/translation contracts with synthetic
+        # runtimes, not the developer machine's changing free-memory counters.
+        policy = mock.patch("linsub.core.hardware.cpu_runtime_profile", side_effect=lambda profile, **_: profile)
+        policy.start()
+        self.addCleanup(policy.stop)
+
+    def test_whisperx_vad_uses_separate_small_batch_and_recovers_from_oom(self):
+        inference = SimpleNamespace(batch_size=32)
+        pipeline = mock.Mock(_segmentation=inference)
+        model = mock.Mock(vad_model=SimpleNamespace(vad_pipeline=pipeline))
+        attempted_batches = []
+
+        def run(_audio, *, batch_size, language):
+            self.assertEqual(batch_size, 8)
+            self.assertIsNone(language)
+            attempted_batches.append(inference.batch_size)
+            if len(attempted_batches) < 3:
+                raise MemoryError(f"batch_size ({inference.batch_size: d}) is probably too large")
+            return {"segments": [{"text": "hello"}]}
+
+        model.transcribe.side_effect = run
+        profile = SimpleNamespace(whisper_batch_size=8, total_vram_bytes=8 * 1024**3)
+        with (
+            mock.patch.object(transcribe, "check_cancellation"),
+            mock.patch.object(transcribe, "log_to_video"),
+        ):
+            result = transcribe._transcribe_with_vad_recovery(model, np.zeros(16000), profile, "cuda", "video-1")
+
+        self.assertEqual(attempted_batches, [4, 2, 1])
+        self.assertEqual(result["segments"][0]["text"], "hello")
+        pipeline.to.assert_not_called()
+
+    def test_whisperx_vad_moves_to_cpu_when_gpu_batch_one_still_fails(self):
+        inference = SimpleNamespace(batch_size=32)
+        pipeline = mock.Mock(_segmentation=inference)
+        model = mock.Mock(vad_model=SimpleNamespace(vad_pipeline=pipeline))
+        attempts = 0
+
+        def run(_audio, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise MemoryError("batch_size ( 1) is probably too large")
+            return {"segments": [{"text": "hello"}]}
+
+        model.transcribe.side_effect = run
+        profile = SimpleNamespace(whisper_batch_size=1, total_vram_bytes=8 * 1024**3)
+        with (
+            mock.patch.object(transcribe, "check_cancellation"),
+            mock.patch.object(transcribe, "log_to_video"),
+        ):
+            transcribe._transcribe_with_vad_recovery(model, np.zeros(16000), profile, "cuda", "video-1")
+
+        pipeline.to.assert_called_once_with(transcribe.torch.device("cpu"))
+        self.assertEqual(attempts, 2)
+
+    def test_empty_whisper_result_is_rejected_before_translation(self):
+        with self.assertRaisesRegex(RuntimeError, "found no speech segments"):
+            transcribe._validate_timestamp_invariants([], 10.0)
+
+    def test_overlapping_mixed_language_timings_are_joined_without_losing_text(self):
+        segments = [
+            {"start": 1.0, "end": 3.0, "text": "Cau tieng Viet.", "language": "vi"},
+            {"start": 2.5, "end": 4.0, "text": "A short English phrase.", "language": "en"},
+            {"start": 4.1, "end": 5.0, "text": "Cau tiep theo.", "language": "vi"},
+        ]
+
+        repaired = transcribe._normalize_sentence_timestamps(segments, 6.0)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(segments[0]["end"], 2.75)
+        self.assertEqual(segments[1]["start"], 2.75)
+        self.assertEqual(
+            [segment["text"] for segment in segments],
+            [
+                "Cau tieng Viet.",
+                "A short English phrase.",
+                "Cau tiep theo.",
+            ],
+        )
+        transcribe._validate_timestamp_invariants(segments, 6.0)
+
+    def test_context_alignment_cannot_intrude_into_a_neighbouring_language(self):
+        vietnamese = {"start": 19.2, "end": 21.7, "text": "Cau tieng Viet", "language": "vi"}
+        english = {"start": 21.7, "end": 22.4, "text": "you", "language": "en"}
+        shifted_english = {**english, "start": 19.3, "end": 19.5}
+
+        detail = transcribe._alignment_intrusion_detail(
+            [english],
+            [shifted_english],
+            [vietnamese, english],
+        )
+
+        self.assertIsNotNone(detail)
+        self.assertIn("overlap", detail)
+
+    def test_context_alignment_may_move_when_it_does_not_intrude_on_another_sentence(self):
+        first = {"start": 10.0, "end": 11.0, "text": "Thank you", "language": "en"}
+        second = {"start": 11.0, "end": 13.0, "text": "Where now", "language": "en"}
+        aligned = [
+            {**first, "start": 8.0, "end": 8.5},
+            {**second, "start": 9.0, "end": 9.7},
+        ]
+
+        self.assertIsNone(transcribe._alignment_intrusion_detail([first, second], aligned, [first, second]))
+
+    def test_segment_language_detection_uses_immutable_sentence_clips(self):
+        original_log = transcribe.log_to_video
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
+        try:
+            segments = [
+                {"start": 0.0, "end": 1.0, "text": "Hello"},
+                {"start": 2.0, "end": 3.5, "text": "Xin chao"},
+            ]
+            model = _AsrModel([("en", 0.98), ("vi", 0.92)])
+            detected = transcribe._detect_segment_languages(
+                model,
+                np.zeros(16_000 * 5, dtype=np.float32),
+                segments,
+                "en",
+                "test-video",
+            )
+        finally:
+            transcribe.log_to_video = original_log
+
+        self.assertEqual([segment["language"] for segment in detected], ["en", "vi"])
+        self.assertEqual(model.model.clip_lengths, [16_000, 24_000])
+
+    def test_transcription_uses_whisperx_batch_api_for_source_text(self):
+        class WhisperModel:
+            def __init__(self):
+                self.calls = []
+                self.model = _LanguageModel([("en", 0.99)])
+
+            def transcribe(self, _audio, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "language": "en",
+                    "segments": [{"start": 0.1, "end": 1.1, "text": "S tier."}],
+                }
+
+        model = WhisperModel()
+        profile = SimpleNamespace(
+            cuda_available=False,
+            cpu_threads=4,
+            whisper_batch_size=8,
+        )
+        original_runtime_profile = transcribe.runtime_profile
+        original_load_model = transcribe.whisperx.load_model
+        original_load_audio = transcribe.whisperx.load_audio
+        original_align = transcribe._align_segments_by_language
+        original_release = transcribe._release_cuda
+        original_log = transcribe.log_to_video
+        transcribe.runtime_profile = lambda: profile
+        transcribe.whisperx.load_model = lambda *_args, **_kwargs: model
+        transcribe.whisperx.load_audio = lambda _path: np.zeros(32_000, dtype=np.float32)
+        transcribe._align_segments_by_language = lambda _audio, segments, *_args, **_kwargs: segments
+        transcribe._release_cuda = lambda *_args, **_kwargs: None
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
+        try:
+            with (
+                tempfile.TemporaryDirectory() as temp_dir,
+                mock.patch.object(transcribe, "_verify_whisperx_vad_asset", return_value="test-vad.bin"),
+                mock.patch.object(transcribe, "_whisper_model_source", return_value=("test-whisper", True)),
+            ):
+                output_path = Path(temp_dir) / "segments.json"
+                output, language = transcribe.transcribe(
+                    "audio.wav",
+                    str(output_path),
+                    "auto",
+                    "test-video",
+                )
+        finally:
+            transcribe.runtime_profile = original_runtime_profile
+            transcribe.whisperx.load_model = original_load_model
+            transcribe.whisperx.load_audio = original_load_audio
+            transcribe._align_segments_by_language = original_align
+            transcribe._release_cuda = original_release
+            transcribe.log_to_video = original_log
+
+        self.assertEqual(language, "en")
+        self.assertEqual(output[0]["text"], "S tier.")
+        self.assertEqual(model.calls, [{"batch_size": 8, "language": None}])
+
+    def test_switching_asr_model_releases_mismatched_warm_model(self):
+        class WhisperModel:
+            model = _LanguageModel([("en", 0.99)])
+
+            def transcribe(self, _audio, **_kwargs):
+                return {
+                    "language": "en",
+                    "segments": [{"start": 0.1, "end": 1.1, "text": "Ready."}],
+                }
+
+        warm_model = object()
+        loaded_model = WhisperModel()
+        profile = SimpleNamespace(
+            cuda_available=False,
+            cpu_threads=4,
+            whisper_batch_size=8,
+        )
+        original_warm = transcribe._WARM_ASR_MODEL
+        original_device = transcribe._WARM_DEVICE
+        original_name = transcribe._WARM_MODEL_NAME
+        transcribe._WARM_ASR_MODEL = warm_model
+        transcribe._WARM_DEVICE = "cuda"
+        transcribe._WARM_MODEL_NAME = "large-v3-turbo"
+        try:
+            with (
+                tempfile.TemporaryDirectory() as temp_dir,
+                mock.patch.object(transcribe, "runtime_profile", return_value=profile),
+                mock.patch.object(transcribe, "_load_whisper_model", return_value=loaded_model) as load_model,
+                mock.patch.object(
+                    transcribe.whisperx,
+                    "load_audio",
+                    return_value=np.zeros(32_000, dtype=np.float32),
+                ),
+                mock.patch.object(
+                    transcribe,
+                    "_align_segments_by_language",
+                    side_effect=lambda _audio, segments, *_args, **_kwargs: segments,
+                ),
+                mock.patch.object(transcribe, "_release_cuda"),
+                mock.patch.object(transcribe, "log_to_video"),
+                mock.patch.object(transcribe.torch.cuda, "is_available", return_value=False),
+            ):
+                transcribe.transcribe(
+                    "audio.wav",
+                    str(Path(temp_dir) / "segments.json"),
+                    "auto",
+                    "test-video",
+                    model_name="small",
+                )
+
+            load_model.assert_called_once_with("cpu", "int8", 4, "small")
+            self.assertIsNone(transcribe._WARM_ASR_MODEL)
+            self.assertIsNone(transcribe._WARM_DEVICE)
+            self.assertIsNone(transcribe._WARM_MODEL_NAME)
+        finally:
+            transcribe._WARM_ASR_MODEL = original_warm
+            transcribe._WARM_DEVICE = original_device
+            transcribe._WARM_MODEL_NAME = original_name
+
+    def test_mixed_language_retranscription_changes_text_only(self):
+        class WhisperModel:
+            def transcribe(self, _audio, **kwargs):
+                self.language = kwargs["language"]
+                return {"segments": [{"text": " Xin chao."}]}
+
+        model = WhisperModel()
+        original_log = transcribe.log_to_video
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
+        try:
+            source = [
+                {"start": 1.25, "end": 3.75, "text": "bad", "language": "vi", "language_confidence": 0.95},
+            ]
+            corrected = transcribe._retranscribe_mixed_language_segments(
+                model,
+                np.zeros(16_000 * 5, dtype=np.float32),
+                source,
+                "en",
+                "test-video",
+            )
+        finally:
+            transcribe.log_to_video = original_log
+
+        self.assertEqual(len(corrected), 1)
+        self.assertEqual((corrected[0]["start"], corrected[0]["end"]), (1.25, 3.75))
+        self.assertEqual(corrected[0]["text"], "Xin chao.")
+        self.assertEqual(model.language, "vi")
+
+    def test_proportional_sentence_split_coalesces_impossible_voice_slots(self):
+        segment = {
+            "start": 18.0,
+            "end": 19.2,
+            "text": "Cam tren tay rat on, nhung den luc dung thi... Thank you very much.",
+            "language": "vi",
+        }
+
+        split = transcribe._split_segment_proportionally(segment)
+
+        self.assertEqual(len(split), 1)
+        self.assertEqual(split[0]["start"], 18.0)
+        self.assertEqual(split[0]["end"], 19.2)
+        self.assertIn("Thank you very much.", split[0]["text"])
+
+    def test_unpunctuated_chinese_vad_block_keeps_its_semantic_context(self):
+        text = (
+            "为什么三级化粪池几十年不用挑粪牛马们有时会想城市里那么多人每天产生那么多排泄物"
+            "化粪池为什么不会满出来其实它是个生化反应器于是微生物会把固体分解成液体和气体"
+            "随后液体继续流向下一格所以池子里的固体增长速度会比想象中慢很多"
+        )
+        segment = {
+            "start": 0.0,
+            "end": 24.0,
+            "text": text,
+            "language": "zh",
+        }
+
+        split = transcribe._split_segment_proportionally(segment)
+
+        self.assertEqual(len(split), 1)
+        self.assertEqual(split[0]["text"], text)
+        self.assertEqual((split[0]["start"], split[0]["end"]), (0.0, 24.0))
+
+    def test_chinese_speech_windows_leave_real_pauses_outside_voice_slots(self):
+        windows = transcribe._speech_windows_in_segment(
+            [(1.0, 2.5), (2.7, 3.8), (5.7, 7.1), (9.0, 10.2)],
+            0.5,
+            11.0,
+        )
+
+        self.assertEqual(windows, [(1.0, 3.8), (5.7, 7.1), (9.0, 10.2)])
+
+    def test_chinese_long_segment_is_retranscribed_per_speech_window(self):
+        audio = np.zeros(16_000 * 12, dtype=np.float32)
+        original = [{"start": 0.0, "end": 11.0, "text": "第一句第二句", "language": "zh"}]
+        model = mock.Mock()
+        model.transcribe.side_effect = [
+            {"segments": [{"text": "第一句"}]},
+            {"segments": [{"text": "第二句"}]},
+        ]
+        with (
+            mock.patch.object(
+                transcribe,
+                "_speech_windows_in_segment",
+                return_value=[(1.0, 2.5), (5.0, 6.5)],
+            ),
+            mock.patch("whisperx.vads.pyannote.Binarize") as binarize,
+            mock.patch.object(transcribe, "log_to_video"),
+        ):
+            speech = mock.Mock()
+            speech.get_timeline.return_value = [
+                SimpleNamespace(start=1.0, end=2.5),
+                SimpleNamespace(start=5.0, end=6.5),
+            ]
+            binarize.return_value.return_value = speech
+            model.vad_model.preprocess_audio.return_value = audio
+            model._vad_params = {"vad_onset": 0.5, "vad_offset": 0.36}
+            output = transcribe._split_long_unaligned_speech(model, audio, original, 8, "test-video", "zh")
+
+        self.assertEqual([(item["start"], item["end"], item["text"]) for item in output], [
+            (1.0, 2.5, "第一句"),
+            (5.0, 6.5, "第二句"),
+        ])
+
+    def test_vietnamese_long_segment_uses_speech_windows_before_translation(self):
+        audio = np.zeros(16_000 * 18, dtype=np.float32)
+        original = [{"start": 0.0, "end": 17.0, "text": "Câu đầu. Câu sau.", "language": "vi"}]
+        model = mock.Mock()
+        model.transcribe.side_effect = [
+            {"segments": [{"text": "Câu đầu."}]},
+            {"segments": [{"text": "Câu sau."}]},
+        ]
+        with (
+            mock.patch("whisperx.vads.pyannote.Binarize") as binarize,
+            mock.patch.object(transcribe, "log_to_video"),
+        ):
+            speech = mock.Mock()
+            speech.get_timeline.return_value = [
+                SimpleNamespace(start=1.0, end=3.0),
+                SimpleNamespace(start=10.0, end=12.0),
+            ]
+            binarize.return_value.return_value = speech
+            model.vad_model.preprocess_audio.return_value = audio
+            model._vad_params = {"vad_onset": 0.5, "vad_offset": 0.36}
+            output = transcribe._split_long_unaligned_speech(
+                model, audio, original, 8, "test-video", "vi",
+            )
+
+        self.assertEqual([(item["start"], item["end"], item["text"]) for item in output], [
+            (1.0, 3.0, "Câu đầu."),
+            (10.0, 12.0, "Câu sau."),
+        ])
+        self.assertEqual([call.kwargs["language"] for call in model.transcribe.call_args_list], ["vi", "vi"])
+
+    def test_uncovered_tail_speech_is_recovered_without_retranscribing_covered_windows(self):
+        audio = np.zeros(16_000 * 160, dtype=np.float32)
+        recognized = [{"start": 140.0, "end": 146.0, "text": "前一句", "language": "zh"}]
+        model = mock.Mock()
+        model.transcribe.return_value = {"segments": [{"text": "两百万"}]}
+
+        with mock.patch.object(transcribe, "log_to_video"):
+            recovered = transcribe._recover_uncovered_speech(
+                model, audio, recognized,
+                [(140.0, 146.0), (153.5, 154.3)], 8, "test-video", "zh",
+            )
+
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual((recovered[0]["start"], recovered[0]["end"]), (153.5, 154.3))
+        self.assertEqual(recovered[0]["text"], "两百万")
+        model.transcribe.assert_called_once()
+
+    def test_short_chinese_segments_still_check_for_an_omitted_tail(self):
+        audio = np.zeros(16_000 * 160, dtype=np.float32)
+        recognized = [{"start": 140.0, "end": 146.0, "text": "前一句", "language": "zh"}]
+        model = mock.Mock()
+        model.transcribe.return_value = {"segments": [{"text": "两百万"}]}
+        with (
+            mock.patch("whisperx.vads.pyannote.Binarize") as binarize,
+            mock.patch.object(transcribe, "log_to_video"),
+        ):
+            speech = mock.Mock()
+            speech.get_timeline.return_value = [
+                SimpleNamespace(start=140.0, end=146.0),
+                SimpleNamespace(start=153.5, end=154.3),
+            ]
+            binarize.return_value.return_value = speech
+            model.vad_model.preprocess_audio.return_value = audio
+            model._vad_params = {"vad_onset": 0.5, "vad_offset": 0.36}
+            output = transcribe._split_long_unaligned_speech(model, audio, recognized, 8, "test-video", "zh")
+
+        self.assertEqual([item["text"] for item in output], ["前一句", "两百万"])
+
+    def test_uncovered_speech_does_not_create_empty_segment(self):
+        model = mock.Mock()
+        model.transcribe.return_value = {"segments": []}
+        with mock.patch.object(transcribe, "log_to_video"):
+            recovered = transcribe._recover_uncovered_speech(
+                model, np.zeros(16_000 * 4, dtype=np.float32), [],
+                [(1.0, 2.0)], 8, "test-video", "zh",
+            )
+        self.assertEqual(recovered, [])
+
+    def test_direct_tail_recovery_bypasses_vad_and_replaces_tiny_timestamp_artifact(self):
+        audio = np.zeros(16_000 * 10, dtype=np.float32)
+        audio[8 * 16_000:9 * 16_000] = 0.12
+        segments = [
+            {"start": 1.0, "end": 2.0, "text": "前一句", "language": "zh"},
+            {"start": 9.8, "end": 9.88, "text": "错误识别", "language": "zh"},
+        ]
+        model = mock.Mock()
+        model.model.transcribe.return_value = (
+            [SimpleNamespace(text="多少钱八千万", avg_logprob=-0.4, no_speech_prob=0.02)],
+            None,
+        )
+        with mock.patch.object(transcribe, "log_to_video"):
+            output = transcribe._recover_speech_without_vad(model, audio, segments, "zh", "test-video")
+
+        self.assertEqual([item["text"] for item in output], ["前一句", "多少钱八千万"])
+        self.assertGreaterEqual(output[-1]["start"], 7.8)
+        self.assertLessEqual(output[-1]["end"], 9.3)
+        self.assertFalse(model.model.transcribe.call_args.kwargs["vad_filter"])
+
+    def test_direct_tail_recovery_rejects_low_confidence_noise(self):
+        audio = np.zeros(16_000 * 10, dtype=np.float32)
+        audio[8 * 16_000:9 * 16_000] = 0.12
+        model = mock.Mock()
+        model.model.transcribe.return_value = (
+            [SimpleNamespace(text="感谢观看", avg_logprob=-1.4, no_speech_prob=0.7)],
+            None,
+        )
+        with mock.patch.object(transcribe, "log_to_video"):
+            output = transcribe._recover_speech_without_vad(
+                model, audio, [{"start": 1.0, "end": 2.0, "text": "前一句", "language": "zh"}],
+                "zh", "test-video",
+            )
+        self.assertEqual([item["text"] for item in output], ["前一句"])
+
+    def test_direct_outro_recovery_checks_gap_before_short_final_reply(self):
+        audio = np.zeros(16_000 * 160, dtype=np.float32)
+        audio[155 * 16_000:int(156.4 * 16_000)] = 0.12
+        segments = [
+            {"start": 145.3, "end": 147.5, "text": "前一句", "language": "zh"},
+            {"start": 156.28, "end": 156.6, "text": "好", "language": "zh"},
+        ]
+        model = mock.Mock()
+        model.model.transcribe.return_value = (
+            [SimpleNamespace(text="多少钱八千万", avg_logprob=-0.3, no_speech_prob=0.02)],
+            None,
+        )
+        with mock.patch.object(transcribe, "log_to_video"):
+            output = transcribe._recover_speech_without_vad(
+                model, audio, segments, "zh", "test-video",
+            )
+
+        self.assertEqual([item["text"] for item in output], ["前一句", "多少钱八千万", "好"])
+        self.assertLessEqual(output[1]["end"], output[2]["start"])
+
+    def test_short_first_sentence_is_coalesced_forward(self):
+        segment = {
+            "start": 10.0,
+            "end": 11.0,
+            "text": "40%! Phan noi dung tiep theo.",
+            "language": "vi",
+        }
+
+        split = transcribe._split_segment_proportionally(segment)
+
+        self.assertEqual(len(split), 1)
+        self.assertEqual(split[0]["text"], "40%! Phan noi dung tiep theo.")
+        self.assertEqual((split[0]["start"], split[0]["end"]), (10.0, 11.0))
+
+    def test_short_raw_whisper_segment_is_coalesced_before_language_detection(self):
+        segments = [
+            {"start": 19.2, "end": 21.75, "text": "Cau tieng Viet", "language": "vi"},
+            {"start": 21.75, "end": 21.874, "text": "Thank you very much.", "language": "en"},
+            {"start": 21.874, "end": 23.1, "text": "Cau tiep theo", "language": "vi"},
+        ]
+
+        coalesced = transcribe._coalesce_short_sentence_segments(segments)
+
+        self.assertEqual(len(coalesced), 2)
+        self.assertEqual((coalesced[0]["start"], coalesced[0]["end"]), (19.2, 21.874))
+        self.assertIn("Thank you very much.", coalesced[0]["text"])
+        self.assertEqual(coalesced[0]["language"], "vi")
+
+    def test_cjk_detector_outlier_keeps_the_primary_language_transcript(self):
+        class WhisperModel:
+            def transcribe(self, *_args, **_kwargs):
+                self.fail("A contradictory CJK label must not overwrite the primary transcript")
+
+            def fail(self, message):
+                raise AssertionError(message)
+
+        original_log = transcribe.log_to_video
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
+        try:
+            source = [
+                {
+                    "start": 1.25,
+                    "end": 3.75,
+                    "text": "Tổng kết có đạt không?",
+                    "language": "zh",
+                    "language_confidence": 0.95,
+                },
+            ]
+            corrected = transcribe._retranscribe_mixed_language_segments(
+                WhisperModel(),
+                np.zeros(16_000 * 5, dtype=np.float32),
+                source,
+                "vi",
+                "test-video",
+            )
+        finally:
+            transcribe.log_to_video = original_log
+
+        self.assertEqual(corrected[0]["text"], "Tổng kết có đạt không?")
+        self.assertEqual(corrected[0]["language"], "vi")
+
+    def test_actual_cjk_transcript_is_still_retranscribed_as_cjk(self):
+        class WhisperModel:
+            def transcribe(self, _audio, **kwargs):
+                self.language = kwargs["language"]
+                return {"segments": [{"text": " 总结合不合格？"}]}
+
+        model = WhisperModel()
+        original_log = transcribe.log_to_video
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
+        try:
+            source = [
+                {
+                    "start": 1.25,
+                    "end": 3.75,
+                    "text": "總結合不合格?",
+                    "language": "zh",
+                    "language_confidence": 0.95,
+                },
+            ]
+            corrected = transcribe._retranscribe_mixed_language_segments(
+                model,
+                np.zeros(16_000 * 5, dtype=np.float32),
+                source,
+                "vi",
+                "test-video",
+            )
+        finally:
+            transcribe.log_to_video = original_log
+
+        self.assertEqual(model.language, "zh")
+        self.assertEqual(corrected[0]["text"], "总结合不合格？")
+        self.assertEqual(corrected[0]["language"], "zh")
+
+    def test_bad_alignment_is_rejected_without_compressing_the_source_span(self):
+        source = {
+            "start": 0.031,
+            "end": 19.893,
+            "text": "Cau thu nhat rat dai. Cau thu hai cung dai. Cau thu ba. Cau thu bon.",
+            "language": "en",
+        }
+        compressed = [
+            {
+                "start": 0.031,
+                "end": 8.781,
+                "text": source["text"],
+                "words": [
+                    {"word": word, "start": 0.031, "end": 0.081, "score": 0.01} for word in source["text"].split()
+                ],
+            }
+        ]
+        original_load_align_model = transcribe._verified_alignment_asset
+        original_align = transcribe._align_without_nltk_download
+        original_release = transcribe._release_cuda
+        original_log = transcribe.log_to_video
+        transcribe._verified_alignment_asset = lambda *_args, **_kwargs: (
+            SimpleNamespace(to=lambda _device: object()),
+            {},
+        )
+        transcribe._align_without_nltk_download = lambda *_args, **_kwargs: {"segments": compressed}
+        transcribe._release_cuda = lambda *_args, **_kwargs: None
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
+        try:
+            aligned = transcribe._align_segments_by_language(
+                np.zeros(16_000 * 21, dtype=np.float32),
+                [source],
+                "cpu",
+                "test-video",
+            )
+        finally:
+            transcribe._verified_alignment_asset = original_load_align_model
+            transcribe._align_without_nltk_download = original_align
+            transcribe._release_cuda = original_release
+            transcribe.log_to_video = original_log
+
+        self.assertEqual(len(aligned), 4)
+        self.assertEqual(aligned[0]["start"], source["start"])
+        self.assertEqual(aligned[-1]["end"], source["end"])
+        self.assertEqual(" ".join(segment["text"] for segment in aligned), source["text"])
+        self.assertTrue(all(left["end"] <= right["start"] for left, right in zip(aligned, aligned[1:])))
+
+    def test_context_alignment_can_correct_timestamps_outside_the_whisper_span(self):
+        source = [
+            {"start": 10.0, "end": 11.0, "text": "Oh, thank you.", "language": "en"},
+            {"start": 11.0, "end": 13.0, "text": "Where do we go?", "language": "en"},
+        ]
+        candidate_words = [
+            {"word": "Oh,", "start": 8.0, "end": 8.1, "score": 0.9},
+            {"word": "thank", "start": 8.2, "end": 8.3, "score": 0.9},
+            {"word": "you.", "start": 8.4, "end": 8.5, "score": 0.9},
+            {"word": "Where", "start": 9.0, "end": 9.1, "score": 0.9},
+            {"word": "do", "start": 9.2, "end": 9.3, "score": 0.9},
+            {"word": "we", "start": 9.4, "end": 9.5, "score": 0.9},
+            {"word": "go?", "start": 9.6, "end": 9.7, "score": 0.9},
+        ]
+        captured = {}
+
+        def align(segments, *_args, **_kwargs):
+            captured["context"] = segments[0]
+            return {
+                "segments": [
+                    {
+                        "start": 8.0,
+                        "end": 9.7,
+                        "text": segments[0]["text"],
+                        "words": candidate_words,
+                    }
+                ]
+            }
+
+        with (
+            mock.patch.object(
+                transcribe,
+                "_verified_alignment_asset",
+                return_value=(SimpleNamespace(to=lambda _device: object()), {}),
+            ),
+            mock.patch.object(transcribe, "_align_without_nltk_download", side_effect=align),
+            mock.patch.object(transcribe, "_release_cuda"),
+            mock.patch.object(transcribe, "log_to_video"),
+        ):
+            aligned = transcribe._align_segments_by_language(
+                np.zeros(16_000 * 20, dtype=np.float32),
+                source,
+                "cpu",
+                "test-video",
+            )
+
+        self.assertEqual(captured["context"]["start"], 7.5)
+        self.assertEqual(captured["context"]["text"], "Oh, thank you. Where do we go?")
+        self.assertEqual([(item["start"], item["end"]) for item in aligned], [(8.0, 8.5), (9.0, 9.7)])
+        self.assertEqual([item["text"] for item in aligned], [item["text"] for item in source])
+
+    def test_context_alignment_rejects_missing_words_instead_of_shifting_sentences(self):
+        source = [
+            {"start": 2.0, "end": 3.0, "text": "First sentence.", "language": "en"},
+            {"start": 3.0, "end": 4.0, "text": "Second sentence.", "language": "en"},
+        ]
+        candidate = [
+            {
+                "start": 1.0,
+                "end": 2.0,
+                "text": "incomplete",
+                "words": [{"word": "First", "start": 1.0, "end": 1.2, "score": 0.9}],
+            }
+        ]
+
+        aligned, detail = transcribe._split_context_alignment(source, candidate, 0.0, 6.5)
+
+        self.assertIsNone(aligned)
+        self.assertIn("word count", detail)
+
+    def test_alignment_groups_split_on_language_and_long_silence(self):
+        segments = [
+            {"start": 0.0, "end": 1.0, "text": "One.", "language": "en"},
+            {"start": 1.2, "end": 2.0, "text": "Two.", "language": "en"},
+            {"start": 2.1, "end": 3.0, "text": "Trois.", "language": "fr"},
+            {"start": 7.0, "end": 8.0, "text": "Quatre.", "language": "fr"},
+        ]
+
+        groups = transcribe._alignment_groups(segments)
+
+        self.assertEqual(
+            [[item["text"] for item in group] for group in groups],
+            [
+                ["One.", "Two."],
+                ["Trois."],
+                ["Quatre."],
+            ],
+        )
+
+    def test_unpinned_huggingface_alignment_model_is_never_downloaded(self):
+        source = {
+            "start": 0.0,
+            "end": 4.0,
+            "text": "Cau thu nhat. Cau thu hai.",
+            "language": "vi",
+        }
+        original_loader = transcribe._verified_alignment_asset
+        original_release = transcribe._release_cuda
+        original_log = transcribe.log_to_video
+        transcribe._verified_alignment_asset = lambda *_args, **_kwargs: self.fail(
+            "An unpinned alignment checkpoint was requested"
+        )
+        transcribe._release_cuda = lambda *_args, **_kwargs: None
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
+        try:
+            aligned = transcribe._align_segments_by_language(
+                np.zeros(16_000 * 4, dtype=np.float32),
+                [source],
+                "cpu",
+                "test-video",
+            )
+        finally:
+            transcribe._verified_alignment_asset = original_loader
+            transcribe._release_cuda = original_release
+            transcribe.log_to_video = original_log
+
+        self.assertEqual(len(aligned), 2)
+        self.assertEqual(aligned[0]["start"], 0.0)
+        self.assertEqual(aligned[-1]["end"], 4.0)
+
+    def test_verified_alignment_manifest_uses_full_sha256_and_fixed_sizes(self):
+        for bundle_name, filename, size, digest in transcribe._VERIFIED_ALIGNMENT_MODELS.values():
+            self.assertTrue(bundle_name)
+            self.assertTrue(filename.endswith((".pt", ".pth")))
+            self.assertGreater(size, 300_000_000)
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_pipeline_never_downloads_a_missing_alignment_model(self):
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(transcribe, "MODELS_DIR", temp_dir),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "missing or corrupted"):
+                transcribe._verified_alignment_asset("en", "video-1")
+
+    def test_pipeline_never_downloads_a_missing_whisper_model(self):
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(transcribe, "MODELS_DIR", temp_dir),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "missing or corrupted"):
+                transcribe._whisper_model_source()
+
+    def test_whisper_source_ignores_external_model_environment_override(self):
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            mock.patch.object(transcribe, "MODELS_DIR", temp_dir),
+            mock.patch.dict(os.environ, {"WHISPER_MODEL": "untrusted/model"}),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "missing or corrupted"):
+                transcribe._whisper_model_source("small")
+
+    def test_bootstrap_whisperx_vad_asset_matches_pinned_manifest(self):
+        self.assertEqual(transcribe._WHISPERX_VAD_SIZE, 17_719_103)
+        self.assertRegex(transcribe._WHISPERX_VAD_SHA256, r"^[0-9a-f]{64}$")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "pytorch_model.bin"
+            model_path.write_bytes(b"verified")
+            with (
+                mock.patch.object(transcribe, "MODELS_DIR", temp_dir),
+                mock.patch.object(
+                    transcribe,
+                    "verify_whisperx_vad_model",
+                    return_value=model_path,
+                ) as verify,
+            ):
+                self.assertEqual(transcribe._verify_whisperx_vad_asset(), model_path)
+        verify.assert_called_once_with(Path(temp_dir) / "whisperx-vad")
+
+    def test_valid_alignment_keeps_model_sentence_timestamps(self):
+        source = {"start": 1.0, "end": 6.0, "text": "First sentence. Second sentence.", "language": "en"}
+        candidate = [
+            {
+                "start": 1.1,
+                "end": 3.0,
+                "text": "First sentence.",
+                "words": [{"word": "First", "start": 1.1, "end": 1.5, "score": 0.8}],
+            },
+            {
+                "start": 3.1,
+                "end": 5.8,
+                "text": "Second sentence.",
+                "words": [{"word": "Second", "start": 3.1, "end": 3.6, "score": 0.7}],
+            },
+        ]
+
+        self.assertEqual(transcribe._alignment_quality(source, candidate), (True, "coverage=0.94"))
+
+    def test_translation_uses_the_language_from_each_segment(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "source.json"
+            output_path = Path(temp_dir) / "translated.json"
+            input_path.write_text(
+                json.dumps(
+                    [
+                        {"start": 0, "end": 1, "text": "Hello", "language": "en"},
+                        {"start": 1, "end": 2, "text": "Xin chao", "language": "vi"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            captured = {}
+            original_worker = translation._translate_with_hymt2_worker
+            original_log = translation.log_to_video
+            translation._translate_with_hymt2_worker = lambda texts, **kwargs: captured.update(kwargs) or [
+                "Bonjour",
+                "Hello",
+            ]
+            translation.log_to_video = lambda *_args, **_kwargs: None
+            try:
+                translated = translation.translate_segments(
+                    str(input_path), str(output_path), "test-video", target_language="fr", source_language="en"
+                )
+            finally:
+                translation._translate_with_hymt2_worker = original_worker
+                translation.log_to_video = original_log
+
+        self.assertEqual(captured["source_languages"], ["English", "Vietnamese"])
+        self.assertEqual([segment["source_language"] for segment in translated], ["en", "vi"])
+        self.assertEqual(
+            [(segment["start"], segment["end"]) for segment in translated],
+            [(0, 1), (1, 2)],
+        )
+        self.assertEqual([segment["timing_source"] for segment in translated], ["unknown", "unknown"])
+
+    def test_translation_retries_only_the_context_leak_and_keeps_context_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "source.json"
+            output_path = Path(temp_dir) / "translated.json"
+            input_path.write_text(
+                json.dumps(
+                    [
+                        {"start": 0, "end": 1, "text": "The farmer gathered grass.", "language": "en"},
+                        {"start": 1, "end": 2, "text": "The cattle waited nearby.", "language": "en"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    translation,
+                    "_translate_with_hymt2_worker",
+                    side_effect=[
+                        ["N1 [English]: The cattle waited nearby.", "Gia súc đang đợi ở gần đó."],
+                        ["Người nông dân gom cỏ.", "The cattle waited nearby."],
+                    ],
+                ) as worker,
+                mock.patch.object(translation, "log_to_video"),
+            ):
+                translated = translation.translate_segments(
+                    str(input_path), str(output_path), "test-video", target_language="vi", source_language="en"
+                )
+
+        self.assertEqual(worker.call_count, 2)
+        self.assertEqual([segment["text"] for segment in translated], [
+            "Người nông dân gom cỏ.",
+            "Gia súc đang đợi ở gần đó.",
+        ])
+        retry_kwargs = worker.call_args_list[1].kwargs
+        self.assertTrue(retry_kwargs["include_context"])
+        self.assertTrue(retry_kwargs["strict_source_only"])
+        self.assertEqual(retry_kwargs["translate_indices"], [0])
+
+    def test_translation_duplicate_detector_ignores_repeated_source_dialogue(self):
+        repeated = translation._suspicious_translation_indexes(
+            ["Thank you very much", "Thank you very much"],
+            ["Cảm ơn bạn rất nhiều", "Cảm ơn bạn rất nhiều"],
+            "Vietnamese",
+        )
+        leaked = translation._suspicious_translation_indexes(
+            ["The farmer gathered grass", "The cattle waited nearby"],
+            ["Người nông dân gom cỏ", "Người nông dân gom cỏ"],
+            "Vietnamese",
+        )
+
+        self.assertEqual(repeated, set())
+        self.assertEqual(leaked, {1})
+
+    def test_subtitle_cues_keep_all_text_inside_the_source_timestamp(self):
+        segment = {
+            "start": 9.22,
+            "end": 15.18,
+            "text": "Neu ban them mot thia mat ong, chat dinh duong se den co bap nhanh hon.",
+        }
+
+        cues = split_segment_into_cues(segment, 24)
+
+        self.assertGreater(len(cues), 1)
+        self.assertEqual(cues[0]["start"], segment["start"])
+        self.assertEqual(cues[-1]["end"], segment["end"])
+        self.assertEqual(
+            " ".join(cue["text"].replace("\n", " ") for cue in cues),
+            segment["text"],
+        )
+        self.assertTrue(all(segment["start"] <= cue["start"] < cue["end"] <= segment["end"] for cue in cues))
+
+    def test_manual_srt_preserves_one_clock_per_editable_segment(self):
+        segment = {
+            "start": 2.25,
+            "end": 13.75,
+            "text": "Một đoạn dài vẫn dùng một clock dù cỡ chữ làm thay đổi các cụm hiển thị.",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "segments.json"
+            output = Path(temp_dir) / "subtitles.srt"
+            source.write_text(json.dumps([segment], ensure_ascii=False), encoding="utf-8")
+
+            generate_srt(
+                str(source),
+                str(output),
+                18,
+                "manual-test",
+                preserve_segment_boundaries=True,
+            )
+            parsed = list(__import__("srt").parse(output.read_text(encoding="utf-8")))
+
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].start.total_seconds(), segment["start"])
+        self.assertEqual(parsed[0].end.total_seconds(), segment["end"])
+        self.assertEqual(parsed[0].content, segment["text"])
+
+    def test_resume_accepts_only_current_aligned_timestamp_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current_path = Path(temp_dir) / "current.json"
+            legacy_path = Path(temp_dir) / "legacy.json"
+            current_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "start": 0,
+                            "end": 1,
+                            "text": "Hello",
+                            "timing_source": transcribe.TIMING_SOURCE,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            legacy_path.write_text(
+                json.dumps([{"start": 0, "end": 1, "text": "Hello"}]),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(_timing_file_is_current(current_path))
+            self.assertFalse(_timing_file_is_current(legacy_path))
+
+    def test_hymt2_prompt_batches_preserve_order_and_context(self):
+        texts = ["Hello", "How are you doing today friend?", "Fine.", "Thanks", "Bye"]
+        self.assertEqual(list(_inference_batches(texts, batch_size=4)), [(0, 4), (4, 5)])
+        self.assertEqual(_context_before_start(["A" * 1300, "B"], 2), 1)
+        self.assertEqual(_context_after_end(["A", "B" * 1300], 1), 1)
+
+        prompt = _build_prompt(
+            ["Hello", "How are you doing today friend?", "Fine."],
+            ["English", "English", "English"],
+            1,
+            "Vietnamese",
+        )
+        self.assertEqual(
+            prompt,
+            "[Background Information - reference only]\n"
+            "Source language: English\n"
+            "[Previous Subtitles]\n"
+            "P1 [English]: Hello\n"
+            "[Following Subtitles]\n"
+            "N1 [English]: Fine.\n"
+            "[End Background Information]\n\n"
+            "Please accurately translate the [Source Text] into Vietnamese, taking the provided "
+            "background information into consideration. Translate only the [Source Text], "
+            "not the background, and never copy a background sentence even when its wording is similar. Preserve its "
+            "meaning, names, numbers, and percentages exactly; do not paraphrase, expand, or omit information. "
+            "Use standard spelling and natural grammar in the target language. "
+            "Only output the translated result without any additional explanation.\n\n"
+            "[Source Text]\n"
+            "How are you doing today friend?",
+        )
+
+        prompts = _build_translation_prompts(
+            texts,
+            ["English"] * len(texts),
+            0,
+            4,
+            "Vietnamese",
+        )
+        self.assertEqual(len(prompts), 4)
+        self.assertIn("[Source Text]\nHello", prompts[0])
+        self.assertIn("[Source Text]\nThanks", prompts[3])
+
+        focused_prompt = _build_prompt(
+            [
+                "Earlier context",
+                "Honey details",
+                "Top 20%.",
+                "Adding a banana helps replenish glycogen after training.",
+                "Top 10%.",
+                "Later context",
+            ],
+            ["English"] * 6,
+            3,
+            "Vietnamese",
+        )
+        self.assertIn("Earlier context", focused_prompt)
+        self.assertIn("Honey details", focused_prompt)
+        self.assertIn("Top 20%.", focused_prompt)
+        self.assertIn("Top 10%.", focused_prompt)
+        self.assertIn("Later context", focused_prompt)
+        self.assertLess(
+            focused_prompt.index("[Background Information - reference only]"),
+            focused_prompt.index("[Source Text]\nAdding a banana helps replenish glycogen"),
+        )
+
+        wide_prompt = _build_prompt(
+            [f"Context line {number} contains enough ordinary words." for number in range(9)],
+            ["English"] * 9,
+            4,
+            "Vietnamese",
+        )
+        for number in (1, 2, 3, 5, 6, 7):
+            self.assertIn(f"Context line {number}", wide_prompt)
+        for number in (0, 8):
+            self.assertNotIn(f"Context line {number}", wide_prompt)
+
+        long_texts = [f"Line {number} " + ("A" * 450) for number in range(20)]
+        long_context_indices = _context_indices(long_texts, 10)
+        self.assertNotIn(0, long_context_indices)
+        self.assertIn(8, long_context_indices)
+        self.assertIn(9, long_context_indices)
+        self.assertIn(11, long_context_indices)
+        self.assertIn(12, long_context_indices)
+        self.assertNotIn(19, long_context_indices)
+        self.assertLessEqual(
+            sum(len(long_texts[context_index]) for context_index in long_context_indices),
+            2400,
+        )
+
+        mixed_prompt = _build_prompt(
+            [
+                "Hello",
+                "今日は特別なメニューがありますので、ぜひお試しください。",
+                "¿Puedes hacerlo sin gluten para mi familia hoy?",
+            ],
+            ["English", "Japanese", "Spanish"],
+            2,
+            "Vietnamese",
+        )
+        self.assertIn("Hello", mixed_prompt)
+        self.assertIn("今日は特別なメニューがありますので、ぜひお試しください。", mixed_prompt)
+        self.assertIn("[Source Text]\n¿Puedes hacerlo sin gluten para mi familia hoy?", mixed_prompt)
+
+        shake_texts = [
+            "If you only drink a protein shake after training, you are in the top 50%.",
+            "Add creatine for strength and recovery.",
+            "Add honey to deliver nutrients faster.",
+            "Add a banana to replenish glycogen.",
+            "Top 10%.",
+            "No gas in, no underfueling, just a shake that actually works.",
+        ]
+        shake_prompt = _build_prompt(
+            shake_texts,
+            ["English"] * len(shake_texts),
+            len(shake_texts) - 1,
+            "Vietnamese",
+        )
+        self.assertNotIn("If you only drink a protein shake", shake_prompt)
+        self.assertIn("Add honey to deliver nutrients faster.", shake_prompt)
+        self.assertIn("Add a banana to replenish glycogen.", shake_prompt)
+        self.assertIn("Top 10%.", shake_prompt)
+        self.assertIn("[Source Text]\nNo gas in, no underfueling, just a shake", shake_prompt)
+
+        fruit_texts = [
+            "for fat loss.",
+            "S tier, elite for fat loss.",
+            "Easy to digest, high in fiber, low calorie and great for cravings.",
+            "Dry fruit.",
+            "F tier, basically fruit with the water removed.",
+            "Tiny portion, high calorie density, easy to destroy your deficit without noticing.",
+        ]
+        fruit_prompt = _build_prompt(
+            fruit_texts,
+            ["English"] * len(fruit_texts),
+            4,
+            "Vietnamese",
+        )
+        self.assertIn("[Source Text]\nF tier, basically fruit with the water removed.", fruit_prompt)
+        self.assertIn("Tiny portion", fruit_prompt)
+
+        kiwi_prompt = _build_prompt(
+            fruit_texts + ["Mango.", "C tier.", "Easy to overeat.", "Kiwi."],
+            ["English"] * 10,
+            9,
+            "Vietnamese",
+        )
+        self.assertIn("[Source Text]\nKiwi.", kiwi_prompt)
+        self.assertIn("standalone subtitle label", kiwi_prompt)
+        self.assertNotIn("Mango.", kiwi_prompt)
+        self.assertNotIn("C tier.", kiwi_prompt)
+        self.assertNotIn("[Previous Subtitles]", kiwi_prompt)
+
+        default_prompt = _build_prompt(
+            ["Hello"],
+            ["English"],
+            0,
+            "Vietnamese",
+            include_context=False,
+        )
+        self.assertEqual(
+            default_prompt,
+            "Translate this standalone subtitle label into Vietnamese. Translate only the "
+            "[Source Text]. Preserve the exact identity of any named item, rank letter, number, unit and "
+            "punctuation. Do not infer or substitute a different item. Use standard target-language spelling. "
+            "Only output the translated result without any additional explanation.\n\n"
+            "[Source Text]\n"
+            "Hello",
+        )
+
+        isolated_kiwi_prompt = _build_prompt(
+            ["Mango.", "C tier.", "Kiwi."],
+            ["English"] * 3,
+            2,
+            "Vietnamese",
+        )
+        self.assertIn("standalone subtitle label", isolated_kiwi_prompt)
+        self.assertIn("Do not infer or substitute a different item.", isolated_kiwi_prompt)
+        self.assertNotIn("Mango.", isolated_kiwi_prompt)
+        self.assertNotIn("C tier.", isolated_kiwi_prompt)
+        self.assertEqual(_output_token_budget(2), 24)
+        self.assertEqual(_output_token_budget(20), 96)
+
+    def test_hymt2_mixed_language_batch_keeps_target_language_segments(self):
+        captured_source_texts = []
+        original_runtime = hymt2_worker._model_runtime
+        original_runtime_profile = hymt2_worker.runtime_profile
+        original_translate_batch = hymt2_worker._translate_prompt_batch
+        original_emit = hymt2_worker._emit_event
+        hymt2_worker._model_runtime = lambda: (object(), object(), object(), "cpu")
+        hymt2_worker.runtime_profile = lambda: SimpleNamespace(is_cpu_only=False)
+        hymt2_worker._translate_prompt_batch = lambda _model, _tokenizer, _torch, _device, _prompts, source_texts: (
+            captured_source_texts.extend(source_texts) or ["Xin chào", "Không gluten"]
+        )
+        hymt2_worker._emit_event = lambda _payload: None
+        try:
+            translated = hymt2_worker.translate(
+                {
+                    "texts": ["Hello", "Đã sẵn sàng", "Sin gluten"],
+                    "source_languages": ["English", "Vietnamese", "Spanish"],
+                    "target_language_name": "Vietnamese",
+                }
+            )
+        finally:
+            hymt2_worker._model_runtime = original_runtime
+            hymt2_worker.runtime_profile = original_runtime_profile
+            hymt2_worker._translate_prompt_batch = original_translate_batch
+            hymt2_worker._emit_event = original_emit
+
+        self.assertEqual(captured_source_texts, ["Hello", "Sin gluten"])
+        self.assertEqual(translated, ["Xin chào", "Đã sẵn sàng", "Không gluten"])
+
+    def test_hymt2_worker_writes_response_and_progress_sidecar(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request_path = Path(temp_dir) / "request.json"
+            response_path = Path(temp_dir) / "response.json"
+            progress_path = Path(temp_dir) / "progress.jsonl"
+            request_path.write_text(
+                json.dumps(
+                    {
+                        "texts": ["Hello"],
+                        "source_languages": ["English"],
+                        "target_language_name": "Vietnamese",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            original_translate = hymt2_worker.translate
+            hymt2_worker.translate = lambda _payload: ["Xin chao"]
+            try:
+                exit_code = hymt2_worker.main(
+                    [
+                        "--request",
+                        str(request_path),
+                        "--response",
+                        str(response_path),
+                        "--progress",
+                        str(progress_path),
+                    ]
+                )
+            finally:
+                hymt2_worker.translate = original_translate
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(response_path.read_text(encoding="utf-8")), {"translations": ["Xin chao"]})
+            self.assertTrue(progress_path.is_file())
+
+    def test_hymt2_single_fallback_accepts_plain_and_json_text(self):
+        self.assertEqual(_clean_single_translation("Xin chao"), "Xin chao")
+        self.assertEqual(_clean_single_translation('"Xin chao"'), "Xin chao")
+        self.assertEqual(_clean_single_translation('["Xin chao"]'), "Xin chao")
+
+    def test_hymt2_server_protocol_starts_and_stops_without_loading_the_model(self):
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(SRC) + os.pathsep + environment.get("PYTHONPATH", "")
+        process = subprocess.Popen(
+            [sys.executable, "-m", "linsub.services.hymt2_worker", "--server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=environment,
+        )
+        try:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write('{"request_id":"ping-1","command":"ping"}\n')
+            process.stdin.flush()
+            self.assertEqual(
+                json.loads(process.stdout.readline()), {"event": "response", "request_id": "ping-1", "ready": True}
+            )
+            process.stdin.write('{"request_id":"stop-1","command":"shutdown"}\n')
+            process.stdin.flush()
+            self.assertEqual(
+                json.loads(process.stdout.readline()), {"event": "response", "request_id": "stop-1", "stopped": True}
+            )
+            process.stdin.close()
+            self.assertEqual(process.wait(timeout=5), 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+
+    def test_video_store_serializes_concurrent_updates_and_recovers_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = temp_dir
+            try:
+                video = video_store.create_video("video-store-test", "input.mp4", VideoConfig())
+                failures = []
+
+                def update_progress(offset):
+                    try:
+                        for value in range(offset, 100, 10):
+                            video_store.update_video(video.video_id, progress=value, step="processing")
+                            self.assertIsNotNone(video_store.get_video(video.video_id))
+                    except Exception as exc:  # pragma: no cover - assertion is reported below.
+                        failures.append(exc)
+
+                threads = [threading.Thread(target=update_progress, args=(offset,)) for offset in range(5)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+                self.assertEqual(failures, [])
+                path = Path(video_store.get_video_json_path(video.video_id))
+                self.assertIsNotNone(video_store.get_video(video.video_id))
+                self.assertTrue(Path(str(path) + ".bak").exists())
+
+                path.write_text("{", encoding="utf-8")
+                recovered = video_store.get_video(video.video_id)
+                self.assertIsNotNone(recovered)
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["video_id"], video.video_id)
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+
+
+if __name__ == "__main__":
+    unittest.main()

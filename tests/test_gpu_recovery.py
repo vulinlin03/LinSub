@@ -1,0 +1,315 @@
+import sys
+import tempfile
+import queue
+import threading
+import time
+import unittest
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from linsub.pipeline import process_video
+from linsub.services import hymt2_worker, translation
+
+
+class GpuRecoveryTests(unittest.TestCase):
+    def test_low_vram_translation_prefers_installed_cpu_engine(self):
+        profile = SimpleNamespace(key="cuda_low_memory")
+        def engine_command(_capability, _command, context):
+            return ["cpu-engine.exe"] if context["device"] == "cpu" else ["gpu-engine.exe"]
+
+        with (
+            mock.patch.object(translation, "runtime_profile", return_value=profile),
+            mock.patch("linsub.services.resource_packs.installed_engine_command", side_effect=engine_command),
+        ):
+            self.assertEqual(translation._worker_command(), ["cpu-engine.exe"])
+
+    def test_low_vram_worker_uses_q4_without_importing_torch(self):
+        profile = SimpleNamespace(
+            key="cuda_low_memory", hymt2_backend="transformers",
+            cuda_available=True, cpu_threads=8,
+        )
+        fake_llama = ModuleType("llama_cpp")
+        fake_llama.Llama = mock.Mock(return_value=object())
+        with (
+            mock.patch.object(hymt2_worker, "runtime_profile", return_value=profile),
+            mock.patch.object(hymt2_worker.importlib.util, "find_spec", return_value=object()),
+            mock.patch.object(hymt2_worker, "_cpu_model_path", return_value="Q4.gguf"),
+            mock.patch.object(hymt2_worker, "_prepare_torch_runtime", side_effect=AssertionError("Torch loaded")),
+            mock.patch.object(hymt2_worker, "_emit_diagnostic"),
+            mock.patch.object(hymt2_worker, "_emit_event"),
+            mock.patch.dict(sys.modules, {"llama_cpp": fake_llama}),
+        ):
+            _model, tokenizer, torch_runtime, device = hymt2_worker._load_model("HY-MT2")
+        self.assertIsNone(tokenizer)
+        self.assertIsNone(torch_runtime)
+        self.assertEqual(device, "cpu-gguf")
+        self.assertEqual(fake_llama.Llama.call_args.kwargs["n_gpu_layers"], 0)
+
+    def test_four_gb_auto_translation_never_falls_through_to_full_gpu(self):
+        profile = SimpleNamespace(key="cuda_low_memory", hymt2_backend="transformers",
+                                  cuda_available=True, total_vram_bytes=4 * 1024**3)
+        with (
+            mock.patch.object(hymt2_worker, "runtime_profile", return_value=profile),
+            mock.patch("linsub.core.hardware.cpu_runtime_profile", return_value=profile),
+            mock.patch.object(hymt2_worker, "translation_model_preference", return_value="auto"),
+            mock.patch.object(hymt2_worker.importlib.util, "find_spec", return_value=None),
+            mock.patch.object(hymt2_worker, "_prepare_torch_runtime", side_effect=AssertionError("Torch loaded")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HY-MT2 CPU Q4"):
+                hymt2_worker._load_model("HY-MT2")
+
+        def engine_command(_capability, _command, context):
+            return ["gpu-engine.exe"] if context["device"] == "gpu" else None
+
+        with (
+            mock.patch.object(translation, "runtime_profile", return_value=profile),
+            mock.patch.object(translation, "translation_model_preference", return_value="auto"),
+            mock.patch.object(translation, "is_frozen", return_value=True),
+            mock.patch("linsub.services.resource_packs.installed_engine_command", side_effect=engine_command),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HY-MT2 CPU Q4"):
+                translation._worker_command()
+
+    def test_recovery_checkpoint_is_not_a_pause_resume_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact = Path(temp_dir) / "timeline.wav"
+            artifact.write_bytes(b"audio")
+            video = SimpleNamespace(
+                checkpoints={"timeline": "signature"},
+                resume_step="",
+                runtime_recovery_step="rendering",
+            )
+
+            self.assertFalse(process_video._checkpoint_valid(video, "timeline", "signature", [str(artifact)]))
+            self.assertTrue(process_video._recovery_checkpoint_valid(video, "timeline", "signature", [str(artifact)]))
+
+    def test_gpu_preflight_stops_before_a_new_stage_when_power_is_lost(self):
+        profile = SimpleNamespace(cuda_available=True)
+        unavailable = SimpleNamespace(cuda_available=True, ac_powered=False)
+        with (
+            mock.patch.object(process_video, "runtime_profile", return_value=profile),
+            mock.patch.object(process_video, "detect_hardware_capabilities", return_value=unavailable),
+        ):
+            with self.assertRaises(process_video.GpuRuntimeUnavailable):
+                process_video._ensure_gpu_available("translation")
+
+    def test_gpu_failure_switches_one_video_to_cpu_once(self):
+        video = SimpleNamespace(gpu_recovery_attempted=False)
+        profile = SimpleNamespace(cuda_available=True)
+        with (
+            mock.patch.object(process_video, "get_video", return_value=video),
+            mock.patch.object(process_video, "runtime_profile", return_value=profile),
+            mock.patch.object(process_video, "update_video") as update_video,
+            mock.patch.object(process_video, "log_to_video"),
+            mock.patch("linsub.pipeline.transcribe.release_warm_whisperx_model"),
+            mock.patch.object(process_video, "shutdown_hymt2_worker"),
+            mock.patch.object(process_video, "configure_processing_device") as configure,
+        ):
+            recovered = process_video._recover_gpu_to_cpu(
+                "video-1",
+                "translating",
+                RuntimeError("CUDA driver lost"),
+            )
+
+        self.assertTrue(recovered)
+        configure.assert_called_once_with("cpu")
+        self.assertTrue(update_video.call_args.kwargs["gpu_recovery_attempted"])
+        self.assertEqual(update_video.call_args.kwargs["runtime_recovery_step"], "translating")
+
+    def test_second_gpu_failure_is_not_retried_automatically(self):
+        video = SimpleNamespace(gpu_recovery_attempted=True)
+        with mock.patch.object(process_video, "get_video", return_value=video):
+            self.assertFalse(
+                process_video._recover_gpu_to_cpu("video-1", "translating", RuntimeError("CUDA device lost"))
+            )
+
+    def test_cpu_recovery_restores_device_and_model_for_the_next_run(self):
+        original_function = process_video.process_video_sync
+        def recover(*_args):
+            process_video.configure_processing_device("cpu")
+            process_video.configure_translation_model("q4")
+            return True
+        with (
+            mock.patch.dict("os.environ", {"LINSUB_PROCESSING_DEVICE": "gpu", "LINSUB_TRANSLATION_MODEL": "full"}),
+            mock.patch.object(process_video, "start_video", side_effect=RuntimeError("CUDA error")),
+            mock.patch.object(process_video, "get_video", return_value=SimpleNamespace(step="translating")),
+            mock.patch.object(process_video, "is_cancelled", return_value=False),
+            mock.patch.object(process_video, "_recover_gpu_to_cpu", side_effect=recover),
+            mock.patch.object(process_video, "process_video_sync", return_value=None),
+            mock.patch.object(process_video, "log_to_video"),
+            mock.patch.object(process_video, "clean_video"),
+        ):
+            original_function("v")
+            self.assertEqual(process_video.processing_device_preference(), "gpu")
+            self.assertEqual(process_video.translation_model_preference(), "full")
+
+    def test_windows_commit_limit_is_reported_without_hiding_it_behind_cpu_recovery(self):
+        profile = SimpleNamespace(cuda_available=True)
+        with mock.patch.object(process_video, "runtime_profile", return_value=profile):
+            self.assertFalse(
+                process_video._is_gpu_runtime_failure(
+                    OSError("The paging file is too small for this operation to complete. (os error 1455)")
+                )
+            )
+
+        message = translation._worker_error_message(
+            "HY-MT2 worker failed: The paging file is too small (os error 1455)",
+            r"D:\logs\worker.log",
+        )
+        self.assertIn("bộ nhớ ảo", message)
+        self.assertIn("nhận dạng và dịch", message)
+        self.assertIn("Bước tạo giọng chưa bắt đầu", message)
+        self.assertIn("worker.log", message)
+
+    def test_cuda_unknown_error_with_native_allocation_failure_reports_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            diagnostic = Path(temporary) / "worker.log"
+            diagnostic.write_text("fatal   : Memory allocation failure\n", encoding="utf-8")
+            message = translation._worker_error_message(
+                "AcceleratorError: CUDA error: unknown error", str(diagnostic)
+            )
+        self.assertIn("bộ nhớ hệ thống", message)
+        self.assertIn("worker.log", message)
+
+    def test_native_torch_crash_is_reported_without_automatic_fallback(self):
+        profile = SimpleNamespace(cuda_available=True)
+        with mock.patch.object(process_video, "runtime_profile", return_value=profile):
+            self.assertFalse(
+                process_video._is_gpu_runtime_failure(
+                    RuntimeError("Native Torch crash (0xC0000005) while loading HY-MT2")
+                )
+            )
+
+    def test_native_worker_exit_reports_hex_stage_and_diagnostic_file(self):
+        worker_output = [
+            '{"event":"diagnostic","detail":{"stage":"weights_load_start"}}\n',
+            "Windows fatal exception: access violation\n",
+        ]
+        message = translation._format_worker_exit(
+            3221225477,
+            "model warm-up",
+            worker_output,
+            r"D:\\LinSubData\\logs\\hymt2-workers\\worker.log",
+        )
+
+        self.assertIn("0xC0000005", message)
+        self.assertIn("weights_load_start", message)
+        self.assertIn("worker.log", message)
+        self.assertIn("access violation", message)
+
+    def test_shutdown_does_not_wait_for_a_hanging_model_warmup(self):
+        class HangingWorker:
+            def __init__(self):
+                self.stdin = self
+                self.command_written = threading.Event()
+                self.returncode = None
+
+            def write(self, _value):
+                self.command_written.set()
+
+            def flush(self):
+                pass
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+            def wait(self, timeout=None):
+                self.returncode = -9
+                return self.returncode
+
+        worker = HangingWorker()
+        output = queue.Queue()
+        original_state = (
+            translation._WORKER_PROCESS,
+            translation._WORKER_OUTPUT,
+            translation._WORKER_READER,
+            translation._WORKER_WARM,
+            translation._WORKER_DIAGNOSTIC_PATH,
+        )
+        translation._WORKER_SHUTDOWN_EVENT.clear()
+        with translation._WORKER_LOCK:
+            translation._WORKER_PROCESS = worker
+            translation._WORKER_OUTPUT = output
+            translation._WORKER_READER = None
+            translation._WORKER_WARM = False
+            translation._WORKER_DIAGNOSTIC_PATH = None
+
+        warmup_errors = []
+
+        def warmup():
+            try:
+                # This test owns a fake worker and tests shutdown only. Live
+                # RAM pressure from the full suite must not block its dispatch;
+                # memory admission has separate deterministic tests.
+                with mock.patch("linsub.core.memory.require_cpu_memory"):
+                    translation.warm_hymt2_worker()
+            except RuntimeError as exc:
+                warmup_errors.append(str(exc))
+
+        thread = threading.Thread(target=warmup)
+        try:
+            thread.start()
+            self.assertTrue(worker.command_written.wait(1))
+            started = time.monotonic()
+            translation.shutdown_hymt2_worker()
+            self.assertLess(time.monotonic() - started, 1.0)
+            thread.join(2)
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(warmup_errors)
+        finally:
+            worker.kill()
+            thread.join(1)
+            with translation._WORKER_LOCK:
+                (
+                    translation._WORKER_PROCESS,
+                    translation._WORKER_OUTPUT,
+                    translation._WORKER_READER,
+                    translation._WORKER_WARM,
+                    translation._WORKER_DIAGNOSTIC_PATH,
+                ) = original_state
+            translation._WORKER_SHUTDOWN_EVENT.clear()
+
+    def test_successful_translation_keeps_persistent_worker_job_alive(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.stdin = mock.Mock()
+        output = queue.Queue()
+        output.put(
+            '{"event":"response","request_id":"request-1","translations":["Xin chào"]}\n'
+        )
+        profile = SimpleNamespace(is_cpu_only=False, translation_idle_seconds=0)
+
+        with (
+            mock.patch.object(translation, "_ensure_hymt2_worker", return_value=(process, output)),
+            mock.patch.object(translation, "_WORKER_PROCESS", process),
+            mock.patch.object(translation, "_WORKER_WARM", False),
+            mock.patch.object(translation.uuid, "uuid4", return_value=SimpleNamespace(hex="request-1")),
+            mock.patch.object(translation, "register_process") as register,
+            mock.patch.object(translation, "unregister_process") as unregister,
+            mock.patch.object(translation, "runtime_profile", return_value=profile),
+            mock.patch.object(translation, "log_to_video"),
+        ):
+            result = translation._translate_with_hymt2_worker(
+                ["Hello"],
+                video_id="video-1",
+                source_languages=["English"],
+                target_language_name="Vietnamese",
+            )
+
+        self.assertEqual(result, ["Xin chào"])
+        register.assert_called_once_with("video-1", process)
+        unregister.assert_called_once_with("video-1", process)
+
+
+if __name__ == "__main__":
+    unittest.main()

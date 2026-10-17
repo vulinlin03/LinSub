@@ -1,0 +1,64 @@
+import unittest
+from unittest.mock import Mock, patch
+
+from linsub.desktop.localization import QMessageBox, _set_ui_language, _ui_text
+
+
+class UiLocalizationTests(unittest.TestCase):
+    def test_save_picker_uses_real_explorer_profile_and_keeps_filename(self):
+        from linsub.desktop.localization import QFileDialog
+        with (patch("linsub.desktop.localization._native_explorer_profile") as profile,
+              patch("linsub.desktop.localization.QtFileDialog.getSaveFileName", return_value=("", "")) as picker):
+            QFileDialog.getSaveFileName(None, "Export", "D:/Exports/project.mp4", "MP4 (*.mp4)")
+        profile.return_value.__enter__.assert_called_once()
+        self.assertEqual(picker.call_args.args[2], "D:/Exports/project.mp4")
+
+    def tearDown(self):
+        _set_ui_language("en")
+        QMessageBox.set_alert_handler(None)
+
+    def test_native_dialog_text_uses_vietnamese_when_selected(self):
+        _set_ui_language("vi")
+
+        self.assertEqual(_ui_text("Replace video"), "Thay video")
+        self.assertEqual(
+            _ui_text("Choose an MP4, MOV, or MKV video file."),
+            "Hãy chọn tệp video MP4, MOV hoặc MKV.",
+        )
+
+    def test_native_dialog_text_uses_english_when_selected(self):
+        _set_ui_language("en")
+
+        self.assertEqual(_ui_text("Replace video"), "Replace video")
+
+    def test_dynamic_native_dialog_prefix_is_localized(self):
+        _set_ui_language("vi")
+
+        self.assertEqual(
+            _ui_text("Cannot save settings: permission denied"),
+            "Không thể lưu cài đặt: permission denied",
+        )
+
+    def test_manual_retranslation_warning_is_natural_vietnamese(self):
+        _set_ui_language("vi")
+
+        self.assertEqual(_ui_text("Translate again"), "Dịch lại")
+        self.assertEqual(
+            _ui_text("Translating again will remove the current voice. You will need to create the voice again."),
+            "Dịch lại sẽ làm mất giọng đọc hiện tại, cần phải tạo giọng đọc mới",
+        )
+
+    def test_non_interactive_alert_uses_the_in_app_handler(self):
+        handler = Mock()
+        QMessageBox.set_alert_handler(handler)
+
+        with patch("linsub.desktop.localization.QtMessageBox.warning") as native_warning:
+            result = QMessageBox.warning(None, "Settings", "Cannot save settings: denied")
+
+        handler.assert_called_once_with("Settings", "Cannot save settings: denied", "warning")
+        native_warning.assert_not_called()
+        self.assertEqual(result, QMessageBox.StandardButton.Ok)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,208 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import "."
+
+Rectangle {
+    id: root
+
+    required property int index
+    required property string fileName
+    required property string caption
+    required property string hashtags
+    required property string postText
+    required property string publishStatus
+    required property string publishError
+    required property string thumbnailSource
+    required property int uploadProgress
+    required property string zernioPostId
+    required property string platformPostUrl
+    required property bool platformPostUrlVerified
+    required property string targetPlatform
+
+    signal editRequested()
+    signal publishRequested()
+
+    readonly property bool hasRemotePost: zernioPostId.length > 0
+    readonly property bool published: publishStatus === "published" || publishStatus === "posted"
+    readonly property bool remoteInFlight: hasRemotePost && !published
+        && !["failed", "partial", "cancelled", "deleted", "draft", "scheduled"].includes(publishStatus)
+    readonly property bool working: ["uploading", "publishing", "pending", "processing", "queued"].includes(publishStatus) || remoteInFlight
+    readonly property bool awaitingUrl: published && hasRemotePost
+        && (!platformPostUrlVerified || platformPostUrl.length === 0)
+    readonly property bool canPublish: !published && !working && publishStatus !== "missing"
+        && publishStatus !== "scheduled"
+        && (!hasRemotePost || ["failed", "partial", "draft"].includes(publishStatus))
+        && !AppController.tiktokPublishBusy && !AppController.zernioAccountSyncing
+        && AppController.zernioApiKeyVerified && AppController.zernioAccountReady
+        && !AppController.zernioCredentialBusy
+    readonly property string statusLabel: published ? (awaitingUrl ? qsTr("Đang lấy liên kết") : "")
+        : working ? (publishStatus === "uploading" && uploadProgress > 0
+            ? qsTr("Đang tải lên %1%").arg(uploadProgress)
+            : publishStatus === "uploading" ? qsTr("Đang bắt đầu tải lên")
+            : publishStatus === "queued" || publishStatus === "pending" ? qsTr("Đang chờ lượt đăng")
+            : qsTr("Đang chờ nền tảng"))
+        : publishStatus === "failed" || publishStatus === "partial" ? qsTr("Lỗi")
+        : publishStatus === "scheduled" ? qsTr("Đã hẹn giờ")
+        : publishStatus === "missing" ? qsTr("Thiếu tệp") : ""
+
+    implicitHeight: 64
+    color: hoverHandler.hovered ? Theme.surfaceMuted : "transparent"
+
+    RowLayout {
+        anchors.fill: parent
+        anchors.leftMargin: Theme.space16
+        anchors.rightMargin: Theme.space12
+        spacing: Theme.space12
+
+        MediaThumbnail {
+            Layout.preferredWidth: 70
+            Layout.preferredHeight: 42
+            source: root.thumbnailSource
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            spacing: 2
+            Text {
+                Layout.fillWidth: true
+                text: root.fileName
+                color: Theme.text
+                font.pixelSize: TypeScale.control
+                font.weight: Font.DemiBold
+                textFormat: Text.PlainText
+                elide: Text.ElideMiddle
+            }
+            Text {
+                Layout.fillWidth: true
+                text: root.publishError.length > 0
+                    ? qsTr("Đăng thất bại · Xem chi tiết lỗi") : root.postText
+                color: root.publishError.length > 0 ? Theme.danger : Theme.textMuted
+                font.pixelSize: TypeScale.metadata
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+            }
+        }
+
+        RowLayout {
+            visible: root.targetPlatform !== AppController.zernioSelectedPlatform
+            Layout.preferredWidth: visible ? 100 : 0
+            spacing: Theme.space4
+            PlatformLogo {
+                Layout.preferredWidth: 17
+                Layout.preferredHeight: 17
+                platform: root.targetPlatform
+            }
+            Text {
+                Layout.fillWidth: true
+                text: root.targetPlatform === "youtube" ? "YouTube"
+                    : root.targetPlatform === "facebook" ? "Facebook"
+                    : root.targetPlatform === "instagram" ? "Instagram" : "TikTok"
+                color: Theme.textMuted
+                font.pixelSize: TypeScale.metadata
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+            }
+        }
+
+        Text {
+            visible: root.statusLabel.length > 0
+            text: root.statusLabel
+            color: root.publishStatus === "failed" || root.publishStatus === "partial"
+                || root.publishStatus === "missing" ? Theme.danger : Theme.textMuted
+            font.family: Theme.fontFamily
+            font.pixelSize: TypeScale.metadata
+            textFormat: Text.PlainText
+        }
+
+        StudioIconButton {
+            visible: root.publishError.length > 0
+            iconName: "info"
+            toolTipText: qsTr("Xem chi tiết lỗi")
+            onClicked: AppController.showAppAlert(qsTr("Lỗi đăng bài"), root.publishError, "warning")
+        }
+
+        StudioIconButton {
+            objectName: "socialRemoveButton"
+            iconName: "delete"
+            toolTipText: qsTr("Xóa khỏi danh sách (không xóa bài trên mạng xã hội)")
+            showToolTip: true
+            enabled: !root.working
+            onClicked: AppController.removeTikTokPublishItem(root.index)
+        }
+
+        StudioButton {
+            objectName: "socialPostButton"
+            text: root.published ? (root.awaitingUrl ? qsTr("Đang hoàn tất") : qsTr("Mở bài đăng"))
+                : root.publishStatus === "failed" || root.publishStatus === "partial" ? qsTr("Đăng lại") : qsTr("Đăng")
+            variant: root.published ? "secondary" : "primary"
+            enabled: root.published
+                ? root.platformPostUrlVerified && root.platformPostUrl.length > 0
+                : root.canPublish
+            onClicked: {
+                if (root.published)
+                    AppController.openTikTokPublishedPost(root.index)
+                else
+                    root.publishRequested()
+            }
+        }
+
+        StudioIconButton {
+            id: moreButton
+            objectName: "socialRowMenuButton"
+            property bool menuWasOpenOnPress: false
+            visible: true
+            iconName: "more"
+            toolTipText: qsTr("Tùy chọn")
+            onPressed: menuWasOpenOnPress = actionMenu.visible
+            onClicked: {
+                if (menuWasOpenOnPress || actionMenu.visible)
+                    actionMenu.close();
+                else
+                    actionMenu.popup(this, width, 0);
+            }
+        }
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: Theme.divider
+    }
+
+    AppProgressBar {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: root.working
+        value: root.uploadProgress
+        indeterminate: root.publishStatus !== "uploading" || root.uploadProgress <= 0
+        active: root.working
+    }
+
+    Menu {
+        id: actionMenu
+        objectName: "socialRowMenu"
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnReleaseOutside
+        width: 200
+        AppMenuItem {
+            text: qsTr("Chỉnh nội dung")
+            iconGlyph: IconCatalog.glyph("edit")
+            collapsed: root.published || root.publishStatus === "scheduled"
+            enabled: !root.working
+            onTriggered: root.editRequested()
+        }
+        AppMenuItem {
+            text: qsTr("Sao chép caption")
+            iconGlyph: "\uE8C8"
+            onTriggered: AppController.copyTikTokPublishCaption(root.index)
+        }
+    }
+
+    HoverHandler { id: hoverHandler }
+}

@@ -1,0 +1,43 @@
+import QtQuick
+import QtQuick.Controls.Basic
+import "."
+
+Button {
+    id: root
+
+    property string glyph: ""
+    property string tone: "ghost"
+    property string toolTipText: ""
+    property bool showToolTip: false
+    property int controlSize: 30
+
+    implicitWidth: controlSize
+    implicitHeight: controlSize
+    focusPolicy: Qt.TabFocus
+    Accessible.name: toolTipText
+    scale: down ? 0.96 : 1
+
+    contentItem: AppIcon {
+        glyph: root.glyph
+        iconSize: Theme.icon
+        iconColor: !root.enabled ? Theme.textDisabled : root.tone === "danger" ? Theme.danger : root.tone === "primary" ? Theme.textOnAccent : Theme.textMuted
+    }
+
+    background: Rectangle {
+        radius: Theme.radiusSmall
+        color: !root.enabled ? "transparent" : root.tone === "primary" ? (root.down ? Theme.interactivePressed : root.hovered ? Theme.interactiveHover : Theme.interactive) : root.tone === "danger" && (root.hovered || root.down) ? Theme.dangerMuted : root.down ? Theme.surfaceStrong : root.hovered ? Theme.surfaceMuted : "transparent"
+        border.width: root.visualFocus ? 2 : 0
+        border.color: Theme.controlFocus
+    }
+
+    Behavior on scale {
+        NumberAnimation {
+            duration: Theme.motionFast
+            easing.type: Easing.OutCubic
+        }
+    }
+
+    ToolTip.visible: root.showToolTip && hovered && !down && toolTipText.length > 0
+    ToolTip.text: toolTipText
+    ToolTip.delay: 450
+}

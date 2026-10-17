@@ -1,0 +1,221 @@
+param(
+  [string]$ArtifactPath = "",
+  [string]$OutputDirectory = "",
+  [switch]$AllowUnsigned,
+  [switch]$UnsignedRelease,
+  [switch]$EngineeringBuild,
+  [switch]$SkipInstallerSmokeTest,
+  [string]$SignCertificatePath = "",
+  [string]$SignCertificateThumbprint = "",
+  [string]$TimestampServer = "http://timestamp.digicert.com"
+)
+
+$ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent $PSScriptRoot
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
+$BuildMetadataPath = Join-Path $Root "build\release-metadata"
+$SetupIconPath = Join-Path $Root "src\linsub\desktop\assets\branding\linsub.ico"
+$BrandingMarkPath = Join-Path $Root "src\linsub\desktop\assets\branding\linsub-mark.png"
+$ArtworkDirectory = Join-Path $Root "build\installer-assets"
+$InstallerTempParent = [System.IO.Path]::GetFullPath((Join-Path $Root "build\installer-temp"))
+$InstallerTemp = [System.IO.Path]::GetFullPath((Join-Path $InstallerTempParent ([guid]::NewGuid().ToString("N"))))
+$PreviousTemp = $env:TEMP
+$PreviousTmp = $env:TMP
+if (!$ArtifactPath) {
+  $ArtifactPath = Join-Path $Root "dist\LinSub"
+}
+$ArtifactPath = [System.IO.Path]::GetFullPath($ArtifactPath)
+if ($UnsignedRelease -and ($AllowUnsigned -or $EngineeringBuild -or $SignCertificatePath -or $SignCertificateThumbprint)) {
+  throw "UnsignedRelease requires public provenance, no signing identity, and no engineering flags."
+}
+if ($AllowUnsigned -and !$EngineeringBuild) {
+  throw "AllowUnsigned is internal-only: also select EngineeringBuild, or use UnsignedRelease for a public candidate."
+}
+if ($EngineeringBuild -and (!$AllowUnsigned -or $SignCertificatePath -or $SignCertificateThumbprint)) {
+  throw "EngineeringBuild requires AllowUnsigned and no signing certificate."
+}
+if (!(Test-Path -LiteralPath (Join-Path $ArtifactPath "LinSub.exe") -PathType Leaf)) {
+  throw "Verified frozen artifact is missing: $ArtifactPath"
+}
+
+& $Python (Join-Path $PSScriptRoot "finalize-release.py") --artifact $ArtifactPath --verify
+if ($LASTEXITCODE -ne 0) { throw "Artifact checksum verification failed." }
+$BuildInfo = Get-Content -LiteralPath (Join-Path $ArtifactPath "BUILD-INFO.json") -Raw | ConvertFrom-Json
+$VersionedLayout = $BuildInfo.layout -eq "versioned"
+$LegalArtifact = if ($VersionedLayout) { Join-Path $ArtifactPath "versions\$($BuildInfo.version)" } else { $ArtifactPath }
+$LegalArguments = @((Join-Path $PSScriptRoot "verify-legal-state.py"), "--artifact", $LegalArtifact)
+if (!$EngineeringBuild) { $LegalArguments += "--public-release" }
+& $Python @LegalArguments
+if ($LASTEXITCODE -ne 0) { throw "Installer legal documents or licensing review failed." }
+if (!$EngineeringBuild) {
+  & $Python (Join-Path $PSScriptRoot "verify-resource-pack-manifest.py") `
+    --manifest (Join-Path $LegalArtifact "RESOURCE-PACKS.json") --strict
+  if ($LASTEXITCODE -ne 0) { throw "Public installer resource catalog is not release-ready." }
+}
+$EligibilityArguments = @((Join-Path $PSScriptRoot "finalize-release.py"), "--artifact", $ArtifactPath, "--verify-installer-eligibility")
+if ($EngineeringBuild) { $EligibilityArguments += "--engineering" }
+& $Python @EligibilityArguments
+if ($LASTEXITCODE -ne 0) { throw "Artifact provenance and payload eligibility verification failed." }
+
+$RequirementJson = & $Python (Join-Path $PSScriptRoot "release-preflight.py") --artifact $ArtifactPath
+if ($LASTEXITCODE -ne 0) { throw "Installer disk preflight calculation failed." }
+$Requirements = $RequirementJson | ConvertFrom-Json
+$FreshRequirementJson = & $Python (Join-Path $PSScriptRoot "release-preflight.py") --artifact $ArtifactPath --fresh-install
+if ($LASTEXITCODE -ne 0) { throw "Fresh-install disk preflight calculation failed." }
+$FreshRequirements = $FreshRequirementJson | ConvertFrom-Json
+$EmbeddedRequirementsPath = Join-Path $ArtifactPath "INSTALL-REQUIREMENTS.json"
+if (!(Test-Path -LiteralPath $EmbeddedRequirementsPath -PathType Leaf)) {
+  throw "The finalized artifact has no embedded storage requirements."
+}
+$EmbeddedRequirements = Get-Content -LiteralPath $EmbeddedRequirementsPath -Raw | ConvertFrom-Json
+if ([int64]$EmbeddedRequirements.artifact_bytes -ne [int64]$FreshRequirements.artifact_bytes) {
+  throw "Embedded storage size is stale. Re-finalize the artifact; do not package an inaccurate estimate."
+}
+Write-Output "Measured uncompressed payload: $($FreshRequirements.artifact_bytes) bytes. Fresh minimum includes $($FreshRequirements.working_headroom_bytes) bytes of operational reserve; optional engines/models are excluded."
+
+if (!(Test-Path -LiteralPath $SetupIconPath -PathType Leaf)) {
+  throw "Installer icon is missing: $SetupIconPath"
+}
+if (!(Test-Path -LiteralPath $BrandingMarkPath -PathType Leaf)) {
+  throw "Installer branding image is missing: $BrandingMarkPath"
+}
+& $Python (Join-Path $PSScriptRoot 'generate-installer-artwork.py') --source $BrandingMarkPath --output $ArtworkDirectory
+if ($LASTEXITCODE -ne 0) { throw "Installer artwork composition failed." }
+if (!$SignCertificatePath -and !$SignCertificateThumbprint -and !$AllowUnsigned -and !$UnsignedRelease) {
+  throw "Choose a signing identity, -UnsignedRelease for public unsigned packaging, or EngineeringBuild with AllowUnsigned for internal tests."
+}
+if ($UnsignedRelease) {
+  Write-Warning "Public unsigned installer: no verified Windows publisher identity; SmartScreen or enterprise policy may block it."
+} elseif (!$SignCertificatePath -and !$SignCertificateThumbprint) {
+  Write-Warning "Building an unsigned installer marked DEVELOPMENT/UNSIGNED. It is not suitable for public distribution."
+}
+
+$Version = (& $Python -c "import tomllib, pathlib; print(tomllib.loads((pathlib.Path(r'$Root') / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version'])").Trim()
+$Iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+$IsccExecutable = if ($Iscc) { $Iscc.Source } else { "" }
+if (!$Iscc) {
+  $IsccCandidates = @(
+    (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+  )
+  $IsccPath = $IsccCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+  if ($IsccPath) {
+    $IsccExecutable = [System.IO.Path]::GetFullPath($IsccPath)
+  }
+}
+if (!$IsccExecutable) {
+  throw "Inno Setup 6 (iscc.exe) is required. Install it, then rerun scripts\build-installer.ps1."
+}
+
+$InstallerScript = Join-Path $Root "installer\LinSub.iss"
+$InstallerOutputDirectory = if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $Root "dist\installer" }
+$SignedBuild = [bool]($SignCertificatePath -or $SignCertificateThumbprint)
+# Signing status belongs in release metadata and documentation, not the public filename.
+$OutputBaseFilename = if ($EngineeringBuild) { "LinSub-$Version-DEVELOPMENT-Setup" } else { "LinSub-$Version-Setup" }
+$InstallerPath = Join-Path $InstallerOutputDirectory "$OutputBaseFilename.exe"
+$SigningEnvironment = @{}
+foreach ($Name in @("LINSUB_SIGN_CERT_PATH", "LINSUB_SIGN_THUMBPRINT", "LINSUB_SIGN_TIMESTAMP")) {
+  $SigningEnvironment[$Name] = [Environment]::GetEnvironmentVariable($Name, "Process")
+}
+try {
+  if (![System.IO.Path]::GetDirectoryName($InstallerTemp).Equals($InstallerTempParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to use an unsafe installer temporary directory: $InstallerTemp"
+  }
+  New-Item -ItemType Directory -Path $InstallerTemp -Force | Out-Null
+  $env:TEMP = $InstallerTemp
+  $env:TMP = $InstallerTemp
+  $SignToolArguments = @()
+  if ($SignedBuild) {
+    $OwnExecutables = @((Join-Path $LegalArtifact $BuildInfo.entrypoint))
+    if ($VersionedLayout) {
+      $OwnExecutables += @((Join-Path $ArtifactPath "LinSub.exe"), (Join-Path $ArtifactPath "updater\LinSubUpdater.exe"))
+    }
+    foreach ($Executable in $OwnExecutables) {
+      $Signature = Get-AuthenticodeSignature -LiteralPath $Executable
+      if ($Signature.Status -ne "Valid" -or !$Signature.TimeStamperCertificate) {
+        throw "Every LinSub executable must be validly signed and timestamped before assembly: $Executable"
+      }
+    }
+    $env:LINSUB_SIGN_CERT_PATH = $SignCertificatePath
+    $env:LINSUB_SIGN_THUMBPRINT = $SignCertificateThumbprint
+    $env:LINSUB_SIGN_TIMESTAMP = $TimestampServer
+    $SigningScript = Join-Path $PSScriptRoot "sign-windows.ps1"
+    $SignToolArguments = @('/Slinsub_release_sign=powershell.exe -NoProfile -ExecutionPolicy Bypass -File $q' + $SigningScript + '$q -FilePath $f')
+  }
+  if (Test-Path -LiteralPath $InstallerPath -PathType Leaf) {
+    Remove-Item -LiteralPath $InstallerPath -Force
+  }
+  $CompilerArguments = @('/Qp', "/O$InstallerOutputDirectory", "/DSourceDir=$ArtifactPath", "/DAppVersion=$Version",
+    "/DRequiredFreeBytes=$($Requirements.required_free_bytes)",
+    "/DRequiredFreshBytes=$($FreshRequirements.required_free_bytes)",
+    "/DRecommendedFreeBytes=$($Requirements.recommended_free_bytes)",
+    "/DRecommendedFreshBytes=$($FreshRequirements.recommended_free_bytes)",
+    "/DArtifactBytes=$($FreshRequirements.artifact_bytes)", "/DSetupIconPath=$SetupIconPath",
+    "/DBrandingMarkPath=$BrandingMarkPath", "/DOutputBaseFilename=$OutputBaseFilename",
+    "/DSidebarArtworkPath=$(Join-Path $ArtworkDirectory 'sidebar.png')",
+    "/DHeaderArtworkPath=$(Join-Path $ArtworkDirectory 'header.png')",
+    "/DVersionedLayout=$([int]$VersionedLayout)", "/DEngineeringBuild=$([int][bool]$EngineeringBuild)",
+    "/DSignedBuild=$([int]$SignedBuild)") + $SignToolArguments
+  & $IsccExecutable @CompilerArguments $InstallerScript
+  if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed with exit code $LASTEXITCODE." }
+  $SmokeInstallerPath = $InstallerPath
+  if (!$SkipInstallerSmokeTest) {
+    # Compile a private AppId so repair/uninstall tests cannot replace the
+    # user's real test installation registration or uninstaller. Keep the
+    # public/engineering flag unchanged: only AppId and output name differ.
+    $SmokeId = [guid]::NewGuid().ToString()
+    $SmokeDirectory = Join-Path $Root "build\installer-fixtures\$SmokeId"
+    New-Item -ItemType Directory -Path $SmokeDirectory -Force | Out-Null
+    $SmokeName = "LinSub-$Version-SMOKE-$SmokeId-DEVELOPMENT-Setup"
+    $SmokeCompilerArguments = @($CompilerArguments | Where-Object { $_ -notlike '/DOutputBaseFilename=*' -and $_ -notlike '/O*' }) + @(
+      "/DOutputBaseFilename=$SmokeName", "/O$SmokeDirectory", "/DSmokeAppId={{$SmokeId}")
+    if ($EngineeringBuild) {
+      $SmokeCompilerArguments += "/DSmokeResourceDirectory=$(Join-Path $InstallerOutputDirectory 'offline-resources')"
+    }
+    & $IsccExecutable @SmokeCompilerArguments $InstallerScript
+    if ($LASTEXITCODE -ne 0) { throw "Private installer smoke fixture compilation failed." }
+    $SmokeInstallerPath = Join-Path $SmokeDirectory "$SmokeName.exe"
+    $SmokeHash = (Get-FileHash -LiteralPath $SmokeInstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath "$SmokeInstallerPath.sha256" -Value "$SmokeHash *$SmokeName.exe" -Encoding ascii
+  }
+}
+finally {
+  $env:TEMP = $PreviousTemp
+  $env:TMP = $PreviousTmp
+  foreach ($Name in $SigningEnvironment.Keys) {
+    [Environment]::SetEnvironmentVariable($Name, $SigningEnvironment[$Name], "Process")
+  }
+  if (Test-Path -LiteralPath $InstallerTemp) {
+    $ResolvedInstallerTemp = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $InstallerTemp).Path)
+    if (![System.IO.Path]::GetDirectoryName($ResolvedInstallerTemp).Equals($InstallerTempParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Refusing to delete an unsafe installer temporary directory: $ResolvedInstallerTemp"
+    }
+    Remove-Item -LiteralPath $ResolvedInstallerTemp -Recurse -Force
+  }
+}
+
+if (!(Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "Expected installer was not created: $InstallerPath" }
+if ($SignedBuild) {
+  $Signature = Get-AuthenticodeSignature -LiteralPath $InstallerPath
+  if ($Signature.Status -ne "Valid" -or !$Signature.TimeStamperCertificate) { throw "Installer signing verification failed." }
+}
+
+$InstallerChecksumPath = "$InstallerPath.sha256"
+$InstallerHash = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath $InstallerChecksumPath -Value "$InstallerHash *$([System.IO.Path]::GetFileName($InstallerPath))" -Encoding ascii
+
+if (!$SkipInstallerSmokeTest) {
+  $SmokeArguments = @{
+    InstallerPath = $SmokeInstallerPath
+  }
+  if ($SignedBuild) {
+    $SmokeArguments.RequireSignature = $true
+  }
+  & (Join-Path $PSScriptRoot "test-installer.ps1") @SmokeArguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "Installer smoke test failed with exit code $LASTEXITCODE."
+  }
+}
+
+Write-Output "Installer ready: $InstallerPath (SHA-256: $InstallerChecksumPath)"

@@ -1,0 +1,45 @@
+import QtQuick
+import QtQuick.Layouts
+import "."
+
+ColumnLayout {
+    id: root
+
+    property string iconName: "projects"
+    property string title: ""
+    property string message: ""
+    default property alias actions: actionArea.data
+
+    spacing: Theme.space8
+
+    Text {
+        Layout.fillWidth: true
+        text: root.title
+        color: Theme.text
+        font.family: Theme.fontFamily
+        font.pixelSize: TypeScale.section
+        font.weight: Font.DemiBold
+        horizontalAlignment: Text.AlignHCenter
+        textFormat: Text.PlainText
+    }
+
+    Text {
+        Layout.fillWidth: true
+        Layout.maximumWidth: 440
+        Layout.alignment: Qt.AlignHCenter
+        text: root.message
+        color: Theme.textMuted
+        font.family: Theme.fontFamily
+        font.pixelSize: TypeScale.control
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+        textFormat: Text.PlainText
+    }
+
+    RowLayout {
+        id: actionArea
+        Layout.alignment: Qt.AlignHCenter
+        Layout.topMargin: Theme.space4
+        spacing: Theme.space8
+    }
+}

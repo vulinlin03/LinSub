@@ -1,0 +1,611 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import "."
+
+ApplicationWindow {
+    id: root
+
+    width: 1440
+    height: 900
+    minimumWidth: 1120
+    minimumHeight: 720
+    visible: false
+    flags: Qt.Window
+    title: ""
+    color: Theme.window
+    topPadding: 0
+    leftPadding: 0
+    rightPadding: 0
+    bottomPadding: 0
+
+    readonly property string routeHome: "home"
+    readonly property string routeProjects: "projects"
+    readonly property string routeSettings: "settings"
+    readonly property string routeApiKeys: "api-keys"
+    readonly property string routePackages: "packages"
+    readonly property string routeSingleProjects: "single-projects"
+    readonly property string routeSingleWorkspace: "single-workspace"
+    readonly property string routeManualProjects: "manual-projects"
+    readonly property string routeManualWorkspace: "manual-workspace"
+    readonly property string routeBatchProjects: "batch-projects"
+    readonly property string routeBatchWorkspace: "batch-workspace"
+    readonly property string routeBatchVideo: "batch-video"
+    readonly property string routeDownloadProjects: "download-projects"
+    readonly property string routeDownloadWorkspace: "download-workspace"
+    readonly property string routePublishProjects: "publish-projects"
+    readonly property string routePublishWorkspace: "publish-workspace"
+    property string currentRoute: routeHome
+    property string workspaceReturnRoute: routeHome
+    property var routeHistory: [routeHome]
+    property int routeHistoryIndex: 0
+    readonly property bool compactNavigation: width < 1280
+    readonly property bool videoProcessing: AppController.isProcessing && !AppController.isSwitchingProcessingDevice
+    readonly property var activeExportJob: AppController.videoExportJobs.find(
+        job => job.status === "rendering" || job.status === "exporting" || job.status === "pending") || ({})
+    readonly property bool exportWorking: AppController.videoExportBusy
+        && Boolean(activeExportJob.videoId)
+    // qmllint disable stale-property-read
+    readonly property var downloader: AppController.mediaDownloader
+    // qmllint enable stale-property-read
+    readonly property bool selectedTaskFailed: projectWorkspaceVisible
+        && !root.exportWorking && AppController.selectedStatus === "failed"
+    readonly property bool selectedTaskPaused: projectWorkspaceVisible
+        && AppController.selectedStatus === "paused"
+    readonly property bool selectedTaskQueued: projectWorkspaceVisible
+        && AppController.isSelectedVideoQueued && !AppController.isSelectedVideoProcessing
+    readonly property bool selectedProgressMeasured: [
+        "extracting_audio", "separating_audio", "transcribing",
+        "creating_subtitle", "building_audio_timeline",
+        "manual_source", "manual_separation", "manual_recognition", "manual_audio"
+    ].indexOf(AppController.selectedStepId) < 0
+    readonly property bool routeCanGoBack: routeHistoryIndex > 0
+    readonly property bool routeCanGoForward: routeHistoryIndex < routeHistory.length - 1
+    readonly property bool projectWorkspaceVisible: currentRoute === routeSingleWorkspace || currentRoute === routeManualWorkspace || currentRoute === routeBatchWorkspace || currentRoute === routeBatchVideo || currentRoute === routeDownloadWorkspace || currentRoute === routePublishWorkspace
+    readonly property bool globalNavigationBlocked: lazyDialogVisible(projectSetupDialogLoader) || lazyDialogVisible(urlImportDialogLoader) || lazyDialogVisible(downloadProjectSourceDialogLoader) || lazyDialogVisible(batchSettingsDialogLoader) || lazyDialogVisible(translationReviewDialogLoader) || lazyDialogVisible(aboutDialogLoader) || lazyDialogVisible(copyrightDialogLoader) || appAlertDialog.visible || modelSetupOverlayLoader.active
+    readonly property bool downloadCanGoBack: routeHost.downloadCanGoBack
+    readonly property bool downloadCanGoForward: routeHost.downloadCanGoForward
+    readonly property bool canNavigateBack: !globalNavigationBlocked && (downloadCanGoBack || routeCanGoBack)
+    readonly property bool canNavigateForward: !globalNavigationBlocked && (downloadCanGoForward || routeCanGoForward)
+    readonly property bool editScopeAvailable: currentRoute === routeSettings || currentRoute === routeApiKeys || currentRoute === routePackages
+        || currentRoute === routeSingleWorkspace
+        || currentRoute === routeManualWorkspace
+        || currentRoute === routeBatchWorkspace
+        || currentRoute === routeBatchVideo
+        || currentRoute === routeDownloadWorkspace
+        || currentRoute === routePublishWorkspace
+
+    function syncEditHistoryScope() {
+        if (currentRoute === routeSettings || currentRoute === routeApiKeys || currentRoute === routePackages) {
+            AppController.setEditHistoryScope("settings");
+        } else if (currentRoute === routeBatchWorkspace
+                || currentRoute === routeDownloadWorkspace
+                || currentRoute === routePublishWorkspace) {
+            AppController.setEditHistoryScope("project");
+        } else if (currentRoute === routeSingleWorkspace
+                || currentRoute === routeManualWorkspace
+                || currentRoute === routeBatchVideo) {
+            AppController.setEditHistoryScope("video");
+        } else {
+            AppController.setEditHistoryScope("none");
+        }
+    }
+
+    onCurrentRouteChanged: syncEditHistoryScope()
+
+    function navigationSection() {
+        if (currentRoute === routeProjects)
+            return "home";
+        if (currentRoute === routeSingleProjects)
+            return "single";
+        if (currentRoute === routeManualProjects)
+            return "manual";
+        if (currentRoute === routeBatchProjects)
+            return "batch";
+        if (currentRoute === routeSettings || currentRoute === routeApiKeys || currentRoute === routePackages)
+            return "settings";
+        if (currentRoute === routeDownloadProjects)
+            return "downloads";
+        if (currentRoute === routePublishProjects)
+            return "social";
+        return "home";
+    }
+
+    function lazyDialogVisible(loader) {
+        return loader.status === Loader.Ready && loader.item !== null && loader.item.visible;
+    }
+
+    // Reconcile in the background whenever the user returns from a browser.
+    // This catches dashboard disconnects immediately without disabling the UI.
+    onActiveChanged: {
+        if (active && currentRoute === routePublishWorkspace && !AppController.tiktokPublishBusy)
+            AppController.reconcileZernioConnections();
+    }
+
+    function routeIsAvailable(route) {
+        if (route === routeHome || route === routeProjects || route === routeSettings || route === routeApiKeys || route === routePackages || route === routeSingleProjects || route === routeManualProjects || route === routeBatchProjects || route === routeDownloadProjects || route === routePublishProjects)
+            return true;
+        if (!AppController.hasOpenProject)
+            return false;
+        if (route === routeSingleWorkspace)
+            return AppController.projectType === "single";
+        if (route === routeManualWorkspace)
+            return AppController.projectType === "manual";
+        if (route === routeBatchWorkspace)
+            return AppController.projectType === "batch";
+        if (route === routeBatchVideo)
+            return AppController.projectType === "batch" && AppController.isSelectedBatchVideo;
+        if (route === routeDownloadWorkspace)
+            return AppController.projectType === "download";
+        if (route === routePublishWorkspace)
+            return AppController.projectType === "publish";
+        return false;
+    }
+
+    function resetRouteHistory(route) {
+        routeHistory = [route];
+        routeHistoryIndex = 0;
+        currentRoute = route;
+    }
+
+    function pruneRouteHistory() {
+        let filtered = [];
+        let nextIndex = 0;
+        for (let index = 0; index < routeHistory.length; ++index) {
+            const route = routeHistory[index];
+            if (!routeIsAvailable(route))
+                continue;
+            if (index <= routeHistoryIndex)
+                nextIndex = filtered.length;
+            filtered.push(route);
+        }
+        if (filtered.length === 0) {
+            resetRouteHistory(workspaceReturnRoute);
+            return;
+        }
+        routeHistory = filtered;
+        routeHistoryIndex = Math.max(0, Math.min(nextIndex, filtered.length - 1));
+        if (!routeIsAvailable(currentRoute))
+            currentRoute = filtered[routeHistoryIndex];
+    }
+
+    function openProjectWorkspace(projectsRoute, workspaceRoute) {
+        workspaceReturnRoute = projectsRoute;
+        resetRouteHistory(projectsRoute);
+        navigate(workspaceRoute);
+    }
+
+    function replaceCurrentRoute(route) {
+        if (route === currentRoute)
+            return;
+        saveCurrentVideoSettings();
+        let nextHistory = routeHistory.slice();
+        nextHistory[routeHistoryIndex] = route;
+        if (routeHistoryIndex > 0 && nextHistory[routeHistoryIndex - 1] === route) {
+            nextHistory = nextHistory.slice(0, routeHistoryIndex);
+            routeHistoryIndex = nextHistory.length - 1;
+        }
+        routeHistory = nextHistory;
+        currentRoute = route;
+    }
+
+    function navigate(route) {
+        if (route === currentRoute)
+            return;
+        if (!routeIsAvailable(route)) {
+            pruneRouteHistory();
+            return;
+        }
+
+        saveCurrentVideoSettings();
+        let nextHistory = routeHistory.slice(0, routeHistoryIndex + 1);
+        nextHistory.push(route);
+        routeHistory = nextHistory;
+        routeHistoryIndex = nextHistory.length - 1;
+        currentRoute = route;
+    }
+
+    function navigateBack() {
+        if (globalNavigationBlocked)
+            return;
+        if (downloadCanGoBack) {
+            routeHost.navigateDownloadBack();
+            return;
+        }
+        pruneRouteHistory();
+        if (!routeCanGoBack)
+            return;
+        saveCurrentVideoSettings();
+        routeHistoryIndex -= 1;
+        currentRoute = routeHistory[routeHistoryIndex];
+    }
+
+    function navigateForward() {
+        if (globalNavigationBlocked)
+            return;
+        if (downloadCanGoForward) {
+            routeHost.navigateDownloadForward();
+            return;
+        }
+        pruneRouteHistory();
+        if (!routeCanGoForward)
+            return;
+        saveCurrentVideoSettings();
+        routeHistoryIndex += 1;
+        currentRoute = routeHistory[routeHistoryIndex];
+    }
+
+    function saveCurrentVideoSettings() {
+        if (currentRoute === routeBatchVideo && AppController.isSelectedBatchVideo && !AppController.isSelectedVideoProcessing)
+            AppController.persistSelectedBatchVideoSettings();
+    }
+
+    Component.onCompleted: {
+        I18n.language = AppController.settingsLanguage;
+        AppController.enableInAppAlerts();
+        syncEditHistoryScope();
+    }
+
+    Binding {
+        target: UiMetrics
+        property: "viewportWidth"
+        value: root.width
+    }
+
+    Binding {
+        target: UiMetrics
+        property: "viewportHeight"
+        value: root.height
+    }
+
+    LazyDialogLoader {
+        id: projectSetupDialogLoader
+        sourceComponent: Component {
+            ProjectSetupDialog { onClosed: projectSetupDialogLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: projectRenameDialogLoader
+        sourceComponent: Component {
+            ProjectRenameDialog { onClosed: projectRenameDialogLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: videoExportDialogLoader
+        sourceComponent: Component { VideoExportDialog { onClosed: videoExportDialogLoader.release() } }
+    }
+    LazyDialogLoader {
+        id: videoExportJobsDialogLoader
+        sourceComponent: Component { VideoExportJobsDialog { onClosed: videoExportJobsDialogLoader.release() } }
+    }
+    Connections {
+        target: AppController
+        function onVideoExportRequested() { videoExportDialogLoader.invoke("openForSelection", []); }
+        function onAutoProcessingRequested() { videoExportDialogLoader.invoke("openForProcessing", []); }
+        function onBatchProcessingRequested(processFirst) { videoExportDialogLoader.invoke("openForBatch", [processFirst]); }
+        function onVideoExportStarted() { videoExportJobsDialogLoader.invoke("open", []); }
+        function onVideoExportProgressRequested() { videoExportJobsDialogLoader.invoke("open", []); }
+    }
+
+    LazyDialogLoader {
+        id: urlImportDialogLoader
+        sourceComponent: Component {
+            UrlImportDialog { onClosed: urlImportDialogLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: downloadProjectSourceDialogLoader
+        sourceComponent: Component {
+            DownloadProjectSourceDialog { onClosed: downloadProjectSourceDialogLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: batchSettingsDialogLoader
+        sourceComponent: Component {
+            BatchSettingsDialog { onClosed: batchSettingsDialogLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: translationReviewDialogLoader
+        sourceComponent: Component {
+            TranslationReviewDialog { onClosed: translationReviewDialogLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: aboutDialogLoader
+        sourceComponent: Component {
+            AboutDialog { onClosed: aboutDialogLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: copyrightDialogLoader
+        sourceComponent: Component {
+            CopyrightDialog { onClosed: copyrightDialogLoader.release() }
+        }
+    }
+
+
+    AppAlertDialog {
+        id: appAlertDialog
+    }
+
+    ConfirmDialog {
+        id: appConfirmationDialog
+        objectName: "appConfirmationDialog"
+        property bool responseSent: false
+        confirmText: qsTr("Xác nhận")
+        onAboutToShow: responseSent = false
+        onConfirmed: {
+            responseSent = true;
+            AppController.respondToAppConfirmation(true);
+        }
+        onRejected: {
+            if (!responseSent) {
+                responseSent = true;
+                AppController.respondToAppConfirmation(false);
+            }
+        }
+        onClosed: {
+            if (!responseSent) {
+                responseSent = true;
+                AppController.respondToAppConfirmation(false);
+            }
+        }
+    }
+
+    Connections {
+        target: AppController
+        function onProjectRenameRequested(key, name) {
+            projectRenameDialogLoader.invoke("openForProject", [key, name]);
+        }
+
+        function onVideoDeleted() {
+            if (!root.projectWorkspaceVisible) {
+                root.pruneRouteHistory();
+                return;
+            }
+            if (!AppController.hasOpenProject) {
+                root.resetRouteHistory(root.workspaceReturnRoute);
+                return;
+            }
+            root.replaceCurrentRoute(root.workspaceReturnRoute);
+            root.pruneRouteHistory();
+        }
+
+        function onBatchDeleted() {
+            if (!root.projectWorkspaceVisible) {
+                root.pruneRouteHistory();
+                return;
+            }
+            root.workspaceReturnRoute = root.routeBatchProjects;
+            root.resetRouteHistory(root.routeBatchProjects);
+        }
+
+        function onProjectSetupChanged() {
+            root.pruneRouteHistory();
+        }
+
+        function onSelectedVideoChanged() {
+            root.pruneRouteHistory();
+        }
+
+        function onSettingsChanged() {
+            I18n.language = AppController.settingsLanguage;
+        }
+
+        function onAppAlertRequested(title, message, severity) {
+            if (severity === "critical")
+                appAlertDialog.showAlert(title, message, severity);
+            else
+                toastStack.show(title, message, severity, severity === "warning" ? 6200 : 4200);
+        }
+
+        function onAppConfirmationRequested(title, message) {
+            appConfirmationDialog.title = title;
+            appConfirmationDialog.message = message;
+            appConfirmationDialog.open();
+        }
+
+
+        function onVideoExportCompleted(videoId, path) {
+            toastStack.show(qsTr("Xuất video thành công"), path, "success", 6500);
+        }
+
+        function onApiKeySettingsRequested(provider) {
+            root.navigate(root.routeApiKeys);
+        }
+
+        function onProjectPrepared() {
+            const returnRoute = root.workspaceReturnRoute === root.routeHome || root.workspaceReturnRoute === root.routeProjects ? root.workspaceReturnRoute : "";
+            if (AppController.projectType === "batch") {
+                root.openProjectWorkspace(returnRoute || root.routeBatchProjects, root.routeBatchWorkspace);
+            } else if (AppController.projectType === "manual") {
+                root.openProjectWorkspace(returnRoute || root.routeManualProjects, root.routeManualWorkspace);
+            } else {
+                if (AppController.projectType === "download") {
+                    root.openProjectWorkspace(returnRoute || root.routeDownloadProjects, root.routeDownloadWorkspace);
+                } else if (AppController.projectType === "publish") {
+                    root.openProjectWorkspace(returnRoute || root.routePublishProjects, root.routePublishWorkspace);
+                } else {
+                    root.openProjectWorkspace(returnRoute || root.routeSingleProjects, root.routeSingleWorkspace);
+                }
+            }
+        }
+    }
+
+    Overlay.modal: Rectangle {
+        color: Theme.scrim
+        Behavior on opacity {
+            NumberAnimation {
+                duration: Theme.motionStandard
+            }
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+
+        AppMenuBar {
+            id: appMenuBar
+            Layout.fillWidth: true
+            Layout.preferredHeight: 40
+            canGoBack: root.canNavigateBack
+            canGoForward: root.canNavigateForward
+            editAvailable: root.editScopeAvailable
+            canUndo: AppController.canUndoEdit
+            canRedo: AppController.canRedoEdit
+            onBackRequested: root.navigateBack()
+            onForwardRequested: root.navigateForward()
+            onHomeRequested: root.navigate(root.routeHome)
+            onUndoRequested: AppController.undoEdit()
+            onRedoRequested: AppController.redoEdit()
+            onNewSingleProjectRequested: {
+                root.workspaceReturnRoute = root.routeSingleProjects;
+                projectSetupDialogLoader.invoke("openForType", ["single"]);
+            }
+            onManualProjectRequested: {
+                root.workspaceReturnRoute = root.routeManualProjects;
+                projectSetupDialogLoader.invoke("openForType", ["manual"]);
+            }
+            onNewBatchProjectRequested: {
+                root.workspaceReturnRoute = root.routeBatchProjects;
+                projectSetupDialogLoader.invoke("openForType", ["batch"]);
+            }
+            onNewDownloadProjectRequested: {
+                root.workspaceReturnRoute = root.routeDownloadProjects;
+                projectSetupDialogLoader.invoke("openForType", ["download"]);
+            }
+            onNewPublishProjectRequested: {
+                root.workspaceReturnRoute = root.routePublishProjects;
+                projectSetupDialogLoader.invoke("openForType", ["publish"]);
+            }
+            onSettingsRequested: root.navigate(root.routeSettings)
+            onApiKeysRequested: root.navigate(root.routeApiKeys)
+            onPackagesRequested: root.navigate(root.routePackages)
+            onAboutRequested: aboutDialogLoader.invoke("open", [])
+            onCopyrightRequested: copyrightDialogLoader.invoke("open", [])
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
+
+            NavigationRail {
+                visible: !root.projectWorkspaceVisible
+                Layout.preferredWidth: root.compactNavigation ? Theme.navigationCompact : Theme.navigationExpanded
+                Layout.fillHeight: true
+                compact: root.compactNavigation
+                currentSection: root.navigationSection()
+                onSectionRequested: function (section) {
+                    AppController.refreshVideos();
+                    if (section === "single")
+                        root.navigate(root.routeSingleProjects);
+                    else if (section === "manual")
+                        root.navigate(root.routeManualProjects);
+                    else if (section === "batch")
+                        root.navigate(root.routeBatchProjects);
+                    else if (section === "downloads")
+                        root.navigate(root.routeDownloadProjects);
+                    else if (section === "social")
+                        root.navigate(root.routePublishProjects);
+                    else
+                        root.navigate(root.routeHome);
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 0
+
+                RouteHost {
+                    id: routeHost
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    currentRoute: root.currentRoute
+
+                    onNewProjectRequested: function (projectType, returnRoute) {
+                        root.workspaceReturnRoute = returnRoute;
+                        projectSetupDialogLoader.invoke("openForType", [projectType]);
+                    }
+                    onWorkspaceRequested: function (returnRoute, workspaceRoute) {
+                        root.openProjectWorkspace(returnRoute, workspaceRoute);
+                    }
+                    onNavigateRequested: function (route) {
+                        AppController.refreshVideos();
+                        root.navigate(route);
+                    }
+                    onReviewTranslationRequested: translationReviewDialogLoader.invoke("open", [])
+                    onUrlImportRequested: function (mode) {
+                        urlImportDialogLoader.invoke("openForMode", [mode]);
+                    }
+                    onDownloadProjectImportRequested: function (mode) {
+                        downloadProjectSourceDialogLoader.invoke("openForMode", [mode]);
+                    }
+                    onBatchSettingsRequested: batchSettingsDialogLoader.invoke("open", [])
+                }
+            }
+        }
+
+        ActivityTray {
+            objectName: "workspaceActivityTray"
+            Layout.fillWidth: true
+            showDetails: false
+            activityState: root.exportWorking ? "exporting" : root.selectedTaskFailed ? "failed"
+                : root.videoProcessing ? "processing"
+                    : root.selectedTaskPaused ? "paused"
+                    : root.selectedTaskQueued ? "queued" : "ready"
+            message: root.selectedTaskFailed ? AppController.selectedFailureMessage
+                : root.exportWorking ? (root.activeExportJob.status === "rendering"
+                    ? qsTr("Đang dựng video") : root.activeExportJob.status === "exporting"
+                    ? qsTr("Đang hoàn thiện và lưu video") : qsTr("Đang chuẩn bị xuất"))
+                : root.videoProcessing ? (AppController.isSelectedVideoProcessing
+                    ? AppController.selectedStageLabel
+                    : qsTr("Đang xử lý video khác"))
+                : root.selectedTaskPaused || root.selectedTaskQueued
+                    ? I18n.progressDetail(AppController.selectedProgressDetail) : ""
+            progress: root.exportWorking ? (root.activeExportJob.status === "exporting"
+                || Boolean(root.activeExportJob.progressMeasured)
+                ? Math.max(0, Math.min(1, Number(root.activeExportJob.progress || 0) / 100)) : -1)
+                : AppController.isSelectedVideoProcessing
+                && root.selectedProgressMeasured
+                && AppController.selectedStepId !== "waiting_for_models"
+                && AppController.selectedStepId !== "starting"
+                ? Math.max(0, Math.min(1, AppController.selectedProgress / 100))
+                : root.selectedTaskPaused
+                    ? Math.max(0, Math.min(1, AppController.selectedProgress / 100)) : -1
+        }
+    }
+
+    Loader {
+        id: modelSetupOverlayLoader
+        anchors.fill: parent
+        active: AppController.modelSetupVisible
+        sourceComponent: Component {
+            ModelSetupOverlay {}
+        }
+    }
+
+    ToastStack {
+        id: toastStack
+        parent: Overlay.overlay
+        onDetailsRequested: (title, message, tone) => appAlertDialog.showAlert(title, message, tone)
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: Theme.space16 + (root.projectWorkspaceVisible ? UiMetrics.toolbarHeight : 40)
+        anchors.rightMargin: Theme.space16
+        width: Math.min(380, root.width - Theme.space32)
+        z: 200
+    }
+}

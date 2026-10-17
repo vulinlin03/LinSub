@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "active_source_license": "LicenseRef-LinSub-Source-Available-1.0",
+  "active_license_sha256": "7e8ae75625ced5824ba938d52b245e0128d814c22ff669b09066710c8d348b1c",
+  "proposed_source_license": "LicenseRef-LinSub-Source-Available-1.0",
+  "proposal_status": "adopted",
+  "owner_approval": {
+    "approved_by": "LinSub Team",
+    "approved_at": "2026-10-01",
+    "basis": "Explicit owner approval and request to clarify redistribution and commercial software restrictions",
+    "language_precedence": "vi"
+  },
+  "effective_release": "1.0.1 reviewed processing lifecycle, recognition resume and cache patch; publication tracked by GitHub release state",
+  "public_release_review": {
+    "approved_by": "Codex (scoped technical packaging review, not independent legal certification)",
+    "approved_at": "2026-10-15",
+    "source_commit": "24139c8 (review baseline; final release commit is bound by BUILD-INFO)",
+    "release_version": "1.0.1",
+    "owner_release_authorization": "Direct owner request to push source, build and publish 1.0.1 with updates from 1.0.0. Preserve previous releases and assets.",
+    "publication_condition": "Retain the exact unchanged ThirdPartySources 1.0.0 asset and rebuilt CPU 15/CUDA 17 engines. Preserve vision 7 at its immutable 0.1.10 URL. Verify installer, frozen Full/Delta upgrades from 1.0.0, rollback, data preservation and public download/hash checks. No new library, model, preview, font, artwork or media recipe is introduced. Keep all existing license restrictions and notices. Scoped technical packaging review, not independent legal certification or an all-machine benchmark claim.",
+    "clearances": {
+      "owned-code-and-contributor-scope": {
+        "path": "legal/reviews/application-scope-2026-10-06.md",
+        "sha256": "6b0fe2a12dcd98ff41452c492175eb45ea608aff2e5cc95ce00d5072a3443eba"
+      },
+      "omnivoice-noncommercial-checkpoint-and-preview-assets": {
+        "path": "legal/reviews/owner-assets-and-omnivoice-2026-10-04.md",
+        "sha256": "fd3764dcb816168e9ec62737823ecf9eca79655e39999b5073779ac927cd7702"
+      },
+      "ffmpeg-complete-corresponding-source": {
+        "path": "legal/reviews/media-source-1.0.1.md",
+        "sha256": "c751fb2a7f16a4d1ec71338990d8f4620a73563a3b56a9bd269efe6cec9c8a06"
+      },
+      "qt-lgpl-module-and-relinking-evidence": {
+        "path": "legal/reviews/qt-replacement-2026-10-06.md",
+        "sha256": "e028472ab65db1b0bcf9c373c362f5e4f2f40a454a956a91f5a0225aa66aeefa"
+      }
+    }
+  },
+  "blockers": []
+}

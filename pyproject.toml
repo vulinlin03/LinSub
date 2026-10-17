@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools==83.0.0", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linsub"
+version = "1.0.1"
+description = "Free desktop video translation, dubbing and automation for Windows"
+authors = [{name = "LinSub Team", email = "support@linsub.com"}]
+license = "LicenseRef-LinSub-Source-Available-1.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "PySide6==6.11.1",
+  "pydantic==2.13.4",
+  "python-dotenv==1.2.2",
+  "packaging==26.2",
+  "numpy==2.5.1",
+  "onnxruntime==1.23.2",
+  "Pillow==12.3.0",
+  "audioop-lts==0.2.2; python_version >= '3.13'",
+  "websockets==16.0",
+  "yt-dlp[curl-cffi]==2026.8.19",
+  "curl-cffi==0.16.3",
+  "certifi==2026.6.17",
+  "playwright==1.63.0",
+  "pydub==0.25.1",
+  "srt==3.5.3",
+  "edge-tts @ https://codeload.github.com/rany2/edge-tts/tar.gz/360fa8e1de354e1dda74c09bd695887d6a44df74#sha256=470d399a288b9ff9800988538ae31c99f06e589ec0ed67cb01141b29a005ab47",
+]
+
+[project.urls]
+Homepage = "https://linsub.pages.dev/"
+Repository = "https://github.com/linsub/linsub"
+Issues = "https://github.com/linsub/linsub/issues"
+
+[project.optional-dependencies]
+douyin-browser = ["playwright==1.63.0"]
+# Development compatibility set. Public releases install these dependencies
+# into versioned engine packs, never into the Core interpreter.
+ai-runtime = [
+  "torch==2.8.0+cu128",
+  "torchaudio==2.8.0+cu128",
+  "torchvision==0.23.0+cu128",
+  "whisperx==3.8.6",
+  "pyannote-audio==4.0.7",
+  "torchcodec==0.7.0",
+  "transformers==4.57.6",
+  "accelerate==1.14.0",
+  "llama-cpp-python==0.3.34",
+  "ctranslate2==4.8.1",
+  "faster-whisper==1.2.1",
+  "pandas==3.0.3",
+  "soxr==1.1.0",
+  "soundfile==0.14.0",
+  "cffi==2.0.0",
+  "tokenizers==0.22.2",
+  "huggingface-hub==0.36.2",
+  "demucs==4.0.1",
+  "rapidocr==3.8.1",
+  "nltk==3.10.3",
+]
+
+[project.scripts]
+linsub = "linsub.desktop.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Exact upstream source, used until this release is available on PyPI.
+# The lock verifier requires both the full commit URL and archive hash.
+[tool.linsub.source-dependencies.edge-tts]
+version = "7.3.1"
+url = "https://codeload.github.com/rany2/edge-tts/tar.gz/360fa8e1de354e1dda74c09bd695887d6a44df74"
+sha256 = "470d399a288b9ff9800988538ae31c99f06e589ec0ed67cb01141b29a005ab47"
+
+[tool.setuptools.package-data]
+"linsub" = ["assets/fonts/Bangers-Regular.ttf"]
+"linsub.desktop" = ["qml/*.qml", "qml/qmldir", "qml/icons/*.svg", "translations/*.qm", "translations/*.ts", "assets/branding/linsub-mark.png", "assets/branding/linsub.ico", "assets/voice_samples/**/*.mp3", "assets/voice_samples/samples.json"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+llama-cpp-python = { index = "llama-cpp-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "llama-cpp-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+explicit = true
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

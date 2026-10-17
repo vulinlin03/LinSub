@@ -1,0 +1,1121 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import "."
+
+Item {
+    id: root
+
+    focus: true
+    clip: true
+
+    signal requestUrlImport()
+    signal requestDownloadProjectImport()
+
+    property int selectedStageIndex: 0
+    property int selectedSubtitleIndex: -1
+    property bool comparing: Boolean(AppController.manualEditorLayout.compare)
+    property real previewZoomPercent: 100
+    readonly property var dockPlacements: ({ "tools": "left", "properties": "right", "tasks": "right" })
+    property string rightActivePanel: String(AppController.manualEditorWorkspace.rightActive || "tasks")
+    property int leftDockWidth: Number(AppController.manualEditorWorkspace.leftWidth || 240)
+    property int timelineDesiredHeight: Number(AppController.manualEditorLayout.timelineHeight || 280)
+    property string activeMonitor: String(AppController.manualEditorWorkspace.monitor || "result")
+    readonly property var dockOrder: ["tools", "properties", "tasks"]
+    property bool layoutReady: false
+    property bool restoringView: false
+    property bool sourceReplacementPending: false
+    function saveEditorView() {
+        if (!restoringView && previewVideoId.length > 0)
+            AppController.saveEditorViewState(previewVideoId, {
+                stage: selectedStageIndex, rightActive: rightActivePanel, monitor: activeMonitor
+            });
+    }
+    function restoreEditorView() {
+        restoringView = true;
+        const view = AppController.editorViewState(previewVideoId);
+        // Older workspaces persisted the redundant export inspector.
+        selectedStageIndex = Number(view.stage || 0) === 6 ? 0 : Number(view.stage || 0);
+        rightActivePanel = String(view.rightActive || "tasks");
+        activeMonitor = String(view.monitor || "result");
+        restoringView = false;
+    }
+    onRightActivePanelChanged: if (layoutReady) saveEditorView()
+    onActiveMonitorChanged: if (layoutReady) saveEditorView()
+    onComparingChanged: {
+        if (layoutReady)
+            layoutSaveTimer.restart();
+    }
+    function panelsFor(side) {
+        // The right side is one contextual inspector, not two competing tabs.
+        return side === "left" ? ["tools"] : ["tasks"];
+    }
+    function activePanelFor(side) {
+        return side === "left" ? "tools"
+            : rightActivePanel === "properties" ? "properties" : "tasks";
+    }
+    function isPanelActive(panelId) {
+        const side = String(dockPlacements[panelId] || "");
+        return side.length > 0 && activePanelFor(side) === panelId;
+    }
+    function panelHost(panelId) {
+        const side = String(dockPlacements[panelId] || "");
+        if (side === "left") return leftDock.contentHost;
+        return rightDock.contentHost;
+    }
+    function activatePanel(panelId, side) {
+        if (side === "right" && (panelId === "properties" || panelId === "tasks"))
+            rightActivePanel = panelId;
+        layoutSaveTimer.restart();
+    }
+    function saveWorkspaceLayout() {
+        AppController.saveManualEditorWorkspace({
+            "placements": dockPlacements,
+            "leftActive": "tools",
+            "rightActive": activePanelFor("right"),
+            "leftWidth": Math.round(leftDock.width),
+            "monitor": activeMonitor
+        });
+    }
+    function resetWorkspaceLayout() {
+        rightActivePanel = "tasks";
+        leftDockWidth = 240;
+        activeMonitor = "result";
+        comparing = false;
+        layoutSaveTimer.restart();
+    }
+    readonly property var segments: AppController.manualSubtitleModel.segments
+    readonly property var editorModel: AppController.manualEditorDocumentModel
+    readonly property var captionSegments: editorModel.subtitleSegments.length > 0
+        ? editorModel.subtitleSegments : segments
+    readonly property var narrationTimings: AppController.manualPreviewAudio.voiceTimings || ({})
+    readonly property var rendererSegments: captionSegments.filter(function(segment) {
+        return !root.subtitleTransformDraft || (Number(segment.start || 0) <= comparePreview.positionSeconds
+            && Number(segment.end || 0) > comparePreview.positionSeconds);
+    }).map(function(segment) {
+        const voice = root.narrationTimings[String(segment.segment_id || "")];
+        // Use the audible, fitted duration, not the original ASR slot. Never
+        // borrow an old clip's clock after its text has changed.
+        if (voice && String(voice.text || "").trim() === String(segment.text || "").trim()
+                && Math.abs(Number(voice.start) - Number(segment.start)) < 0.05
+                && Number(voice.end) > Number(segment.start))
+            segment = Object.assign({}, segment, {_speech_end: Math.min(Number(segment.end), Number(voice.end))});
+        if (root.subtitleTransformDraft)
+            segment = Object.assign({}, segment, {
+                _style: Object.assign({}, segment._style || root.editorSubtitleStyle, root.subtitleTransformDraft)
+            });
+        return segment;
+    })
+    readonly property var editorSubtitleStyle: editorModel.defaultSubtitleStyle || ({})
+    readonly property var selectedEditorClip: editorModel.selectedClip || ({})
+    onSelectedEditorClipChanged: {
+        if (String(selectedEditorClip.track_id || "") !== "subtitles")
+            return;
+        const segmentId = String(selectedEditorClip.segment_id || "");
+        const index = segments.findIndex(function(segment) {
+            return String(segment.segment_id || "") === segmentId;
+        });
+        if (index >= 0)
+            selectedSubtitleIndex = index;
+    }
+    readonly property var selectedEditorClipIds: editorModel.selectedClipIds || []
+    readonly property bool editorHasSelection: selectedEditorClipIds.length > 0
+    readonly property bool editorSourceSelected: String(selectedEditorClip.track_id || "") === "source-video"
+    property bool timelineSnappingEnabled: true
+    property string previewVideoId: ""
+    property bool applyingSubtitleEdit: false
+    property bool subtitleTransformActive: false
+    property var subtitleTransformDraft: null
+    property bool watermarkTransformActive: false
+    property bool ocrTransformActive: false
+    property var ocrRegionDrafts: ({})
+    property var ocrModeDrafts: ({})
+    readonly property var ocrLayers: editorModel.ocrLayers || []
+    readonly property var unresolvedOcrTrackIds: ocrLayers.filter(function(layer) {
+        return layer.primary && Object.keys(layer.region || {}).length === 0;
+    }).map(function(layer) { return String(layer.track_id); })
+    readonly property var timelineEditorTracks: (editorModel.tracks || []).filter(function(track) {
+        return root.unresolvedOcrTrackIds.indexOf(String(track.track_id)) < 0;
+    })
+    readonly property var timelineEditorClips: (editorModel.clips || []).filter(function(clip) {
+        return root.unresolvedOcrTrackIds.indexOf(String(clip.track_id)) < 0;
+    })
+    readonly property string selectedOcrLayerId: String(selectedEditorClip.kind || "") === "ocr"
+        ? String(selectedEditorClip.clip_id) : "ocr-source-region"
+    readonly property var selectedOcrLayer: ocrLayers.find(function(layer) {
+        return String(layer.clip_id) === root.selectedOcrLayerId;
+    }) || ({})
+    readonly property var ocrRegionDraft: ocrRegionDrafts[selectedOcrLayerId] || null
+    property bool subtitleAudioRefreshPending: false
+    property bool subtitleVisualRefreshPending: false
+    property bool initialMediaLoad: true
+    readonly property int subtitleToolIndex: 2
+    readonly property int imageToolIndex: 3
+    readonly property int watermarkToolIndex: 7
+    readonly property var stageIds: [
+        "source", "translation", "subtitle", "image", "voice", "audio", "export"
+    ]
+    // qmllint disable missing-property
+    readonly property var availableToolModel: AppController.manualToolModel
+    readonly property var toolModel: availableToolModel.length > 0
+        ? availableToolModel : [
+            { "label": qsTr("Nguồn"), "state": "blocked", "canRun": false },
+            { "label": qsTr("Nhận dạng & dịch"), "state": "blocked", "canRun": false },
+            { "label": qsTr("Phụ đề"), "state": "blocked", "canRun": false },
+            { "label": qsTr("Hình ảnh"), "state": "blocked", "canRun": false },
+            { "label": qsTr("Giọng đọc"), "state": "blocked", "canRun": false },
+            { "label": qsTr("Âm thanh"), "state": "blocked", "canRun": false },
+            { "label": qsTr("Xuất"), "state": "blocked", "canRun": false }
+        ]
+    readonly property var emptyEditorTracks: [
+        { "track_id": "source-video", "kind": "source_video", "name": qsTr("Video nguồn"), "visible": true },
+        { "track_id": "subtitles", "kind": "subtitle", "name": qsTr("Phụ đề"), "visible": true },
+        { "track_id": "voice", "kind": "voice", "name": qsTr("Giọng đọc"), "visible": true },
+        { "track_id": "source-audio", "kind": "source_audio", "name": qsTr("Âm thanh nguồn"), "visible": true },
+        { "track_id": "music", "kind": "music", "name": qsTr("Nhạc nền"), "visible": true }
+    ]
+    readonly property var previewMedia: AppController.reviewPreviewMedia || ({})
+    readonly property var previewRenderLayout: previewMedia.subtitleRenderLayout || ({})
+    readonly property bool subtitleLayoutOverride: Boolean(AppController.subtitleLayoutOverride)
+    readonly property int activeSubtitleFontSize: Number(
+        subtitleTransformDraft ? subtitleTransformDraft.font_size
+        : editorSubtitleStyle.font_size !== undefined ? editorSubtitleStyle.font_size
+        : (previewRenderLayout.fontSize || AppController.subtitleFontSize))
+    readonly property int activeSubtitlePositionX: Number(
+        subtitleTransformDraft ? subtitleTransformDraft.position_x_percent
+        : editorSubtitleStyle.position_x_percent !== undefined ? editorSubtitleStyle.position_x_percent
+        : (previewRenderLayout.positionXPercent || AppController.subtitlePositionXPercent))
+    readonly property int activeSubtitlePositionY: Number(
+        subtitleTransformDraft ? subtitleTransformDraft.position_y_percent
+        : editorSubtitleStyle.position_y_percent !== undefined ? editorSubtitleStyle.position_y_percent
+        : (previewRenderLayout.positionYPercent || AppController.subtitlePositionYPercent))
+    readonly property int activeSubtitleBoxWidth: Number(
+        subtitleTransformDraft ? subtitleTransformDraft.max_width_percent
+        : editorSubtitleStyle.max_width_percent !== undefined ? editorSubtitleStyle.max_width_percent
+        : (previewRenderLayout.boxWidthPercent || AppController.subtitleBoxWidthPercent))
+    readonly property int activeSubtitleBoxHeight: Number(subtitleTransformDraft
+        ? subtitleTransformDraft.box_height_percent : editorSubtitleStyle.box_height_percent !== undefined
+        ? editorSubtitleStyle.box_height_percent : AppController.subtitleBoxHeightPercent)
+    readonly property int activeSubtitleOutline: Number(
+        editorSubtitleStyle.outline_width !== undefined ? editorSubtitleStyle.outline_width
+        : (previewRenderLayout.outline || Math.max(2, Math.round(activeSubtitleFontSize * 0.09))))
+    readonly property int subtitleOutputHeight: Math.max(
+        1,
+        Number(previewRenderLayout.outputHeight || previewMedia.videoHeight || 1080)
+    )
+    readonly property bool hasTimelineOutput: AppController.hasSelectedOutput
+        && Number(root.previewMedia.outputSpeed || 1) === 1
+    readonly property url currentResultSource: String(AppController.editorPreviewSource || "").length > 0
+        ? AppController.editorPreviewSource
+        : root.hasTimelineOutput
+            ? AppController.selectedOutputSource
+            : AppController.selectedInputSource
+    readonly property int previewSubtitleIndex: subtitleIndexAt(comparePreview.positionSeconds)
+    readonly property var previewSubtitle: previewSubtitleIndex >= 0
+        && previewSubtitleIndex < segments.length
+        ? segments[previewSubtitleIndex] : ({})
+    readonly property int subtitleOutputWidth: Math.max(
+        1,
+        Number(previewRenderLayout.outputWidth || previewMedia.videoWidth || 1920)
+    )
+    readonly property int subtitleLayoutWidth: Math.max(
+        24, Math.round(subtitleOutputWidth * activeSubtitleBoxWidth / 100))
+    readonly property int subtitleLayoutHeight: Math.max(20, Math.round(
+        subtitleOutputHeight * activeSubtitleBoxHeight / 100))
+    readonly property var previewSubtitleFrame: AppController.subtitleOverlayRenderer.frame
+    readonly property ActivityLogDialog technicalLogDialog: technicalLogLoader.item as ActivityLogDialog
+    readonly property string previewSubtitleFragment: String(previewSubtitleFrame.text || "")
+    readonly property real previewSubtitleKaraokeProgress: Number(previewSubtitleFrame.progress || 0)
+    // qmllint enable missing-property
+
+    onSelectedStageIndexChanged: {
+        if (layoutReady)
+            saveEditorView();
+        if (selectedStageIndex !== subtitleToolIndex)
+            subtitleTransformActive = false;
+        if (selectedStageIndex !== watermarkToolIndex)
+            watermarkTransformActive = false;
+        if (selectedStageIndex !== imageToolIndex)
+            ocrTransformActive = false;
+        else
+            ocrTransformActive = true;
+    }
+
+    function warmTool(index) {
+        const capability = index === 1 && AppController.manualHasImportedSrt ? "translation" : ({
+            0: "separation",
+            1: "recognition",
+            3: "ocr",
+            4: "voice"
+        })[index] || "";
+        if (capability.length === 0)
+            return;
+        AppController.warmCapabilities(capability, {
+            device: AppController.processingDevice,
+            model: AppController.speechRecognitionModel,
+            language: AppController.targetLanguage,
+            provider: AppController.ttsProvider
+        });
+        if (index === 1 && capability !== "translation")
+            AppController.warmCapabilities("translation", {
+                device: AppController.processingDevice,
+                language: AppController.targetLanguage
+            });
+    }
+
+    function subtitleIndexAt(seconds) {
+        const time = Math.max(0, Number(seconds || 0));
+        for (let index = 0; index < segments.length; ++index) {
+            const start = Number(segments[index].start || 0);
+            const end = Number(segments[index].end || 0);
+            if (time >= start && (time < end || (index === segments.length - 1 && time <= end)))
+                return index;
+        }
+        return -1;
+    }
+
+    function reloadSegments() {
+        if (applyingSubtitleEdit)
+            return;
+        AppController.loadManualSubtitles();
+        if (segments.length === 0) {
+            selectedSubtitleIndex = -1;
+            subtitleTransformActive = false;
+        } else {
+            selectedSubtitleIndex = Math.max(0, Math.min(selectedSubtitleIndex, segments.length - 1));
+        }
+    }
+
+    function schedulePreview() {
+        if (AppController.projectType !== "manual" || sourceReplacementPending)
+            return;
+        previewTimer.restart();
+    }
+
+    function commitSubtitleTiming(index, start, end) {
+        if (index < 0 || index >= segments.length)
+            return false;
+        return AppController.saveManualSubtitleTiming(String(segments[index].segment_id), start, end);
+    }
+
+    function dismissSubtitleEditor() {
+        subtitleTransformDraft = null;
+        stageInspector.dismissTextEditor();
+        subtitleTransformActive = false;
+        AppController.endManualSubtitleEdit();
+        root.forceActiveFocus();
+    }
+
+    function dismissWatermarkEditor() {
+        watermarkTransformActive = false;
+        root.forceActiveFocus();
+    }
+
+    function selectWatermark() {
+        dismissSubtitleEditor();
+        selectedStageIndex = watermarkToolIndex;
+        watermarkTransformActive = true;
+        AppController.manualEditorDocumentModel.selectClip("watermark-1", false);
+        activatePanel("tasks", "right");
+    }
+
+    function selectOcrRegion(clipId) {
+        dismissSubtitleEditor();
+        dismissWatermarkEditor();
+        if (clipId && editorModel.selectedClipIds.indexOf(clipId) < 0)
+            AppController.manualEditorDocumentModel.selectClip(clipId, false);
+        selectedStageIndex = imageToolIndex;
+        ocrTransformActive = true;
+        activatePanel("tasks", "right");
+    }
+
+    function setOcrRegionDraft(clipId, region) {
+        ocrRegionDrafts = Object.assign({}, ocrRegionDrafts, {[clipId]: region});
+    }
+
+    function discardOcrRegionDraft(clipId) {
+        const key = clipId || selectedOcrLayerId;
+        const regions = Object.assign({}, ocrRegionDrafts);
+        const modes = Object.assign({}, ocrModeDrafts);
+        delete regions[key];
+        delete modes[key];
+        ocrRegionDrafts = regions;
+        ocrModeDrafts = modes;
+        ocrTransformActive = false;
+    }
+
+    function selectEditorClip(clipId) {
+        if (AppController.manualEditorDocumentModel.selectedClipIds.indexOf(clipId) < 0)
+            AppController.manualEditorDocumentModel.selectClip(clipId, false);
+        const selected = AppController.manualEditorDocumentModel.selectedClip;
+        if (String(selected.kind || "") === "ocr") {
+            root.selectOcrRegion(clipId);
+            return;
+        }
+        const trackId = String(selected.track_id || "");
+        if (trackId === "subtitles") {
+            const segmentId = String(selected.segment_id || "");
+            const index = segments.findIndex(function(segment) {
+                return String(segment.segment_id || "") === segmentId;
+            });
+            if (index >= 0) {
+                selectSubtitle(index, false);
+                return;
+            }
+        }
+        const stageByTrack = {
+            "source-video": 0, "subtitles": 2, "overlays": 7,
+            "voice": 4, "source-audio": 5, "music": 5
+        };
+        if (stageByTrack[trackId] !== undefined)
+            selectedStageIndex = stageByTrack[trackId];
+        activatePanel(["subtitles", "source-video", "source-audio", "music"].indexOf(trackId) >= 0
+            || clipId === "watermark-1"
+            ? "tasks" : "properties", "right");
+        root.forceActiveFocus();
+    }
+
+    function selectSubtitle(index, seek) {
+        stageInspector.dismissTextEditor();
+        if (index < 0 || index >= segments.length)
+            return;
+        selectedSubtitleIndex = index;
+        watermarkTransformActive = false;
+        selectedStageIndex = subtitleToolIndex;
+        subtitleTransformActive = true;
+        AppController.beginManualSubtitleEdit(String(segments[index].segment_id));
+        AppController.manualEditorDocumentModel.selectClip(
+            "subtitle-" + String(segments[index].segment_id), false);
+        activatePanel("tasks", "right");
+        if (seek)
+            comparePreview.seekTo(Number(segments[index].start || 0));
+    }
+
+    function selectSubtitleInDialog(index) {
+        if (index < 0 || index >= segments.length)
+            return;
+        selectedSubtitleIndex = index;
+        selectedStageIndex = subtitleToolIndex;
+        subtitleTransformActive = true;
+        AppController.beginManualSubtitleEdit(String(segments[index].segment_id));
+        AppController.manualEditorDocumentModel.selectClip(
+            "subtitle-" + String(segments[index].segment_id), false);
+        comparePreview.seekTo(Number(segments[index].start || 0));
+    }
+
+    function finishSubtitleDialogEditing() {
+        subtitleTransformActive = false;
+        AppController.endManualSubtitleEdit();
+        root.forceActiveFocus();
+    }
+
+    readonly property string overlayLayoutJson: JSON.stringify({
+        outputWidth: subtitleOutputWidth, outputHeight: subtitleOutputHeight,
+        layoutWidth: subtitleLayoutWidth, layoutHeight: subtitleLayoutHeight,
+        fontSize: activeSubtitleFontSize, outline: activeSubtitleOutline,
+        positionXPercent: activeSubtitlePositionX, positionYPercent: activeSubtitlePositionY,
+        fontFamily: editorSubtitleStyle.font_family || AppController.subtitleFontFamily,
+        textColor: editorSubtitleStyle.text_color || AppController.subtitleTextColor,
+        karaokeColor: editorSubtitleStyle.karaoke_color || AppController.subtitleKaraokeColor,
+        outlineColor: editorSubtitleStyle.outline_color || AppController.subtitleOutlineColor,
+        bold: editorSubtitleStyle.font_weight === undefined
+            ? AppController.subtitleBold : Number(editorSubtitleStyle.font_weight) >= 600,
+        italic: editorSubtitleStyle.italic === undefined
+            ? AppController.subtitleItalic : Boolean(editorSubtitleStyle.italic),
+        uppercase: editorSubtitleStyle.uppercase === undefined
+            ? AppController.subtitleUppercase : Boolean(editorSubtitleStyle.uppercase),
+        shadow: Math.max(
+            Math.abs(Number(editorSubtitleStyle.shadow_offset_x || 0)),
+            Math.abs(Number(editorSubtitleStyle.shadow_offset_y || AppController.subtitleShadow))
+        )
+    })
+    function requestSubtitleOverlay() {
+        if (!subtitleTransformDraft) overlayTimer.restart();
+        else if (!overlayTimer.running) overlayTimer.start();
+    }
+    onOverlayLayoutJsonChanged: requestSubtitleOverlay()
+    onRendererSegmentsChanged: requestSubtitleOverlay()
+    Timer {
+        id: overlayTimer
+        interval: root.subtitleTransformDraft ? 90 : root.initialMediaLoad ? 300 : 160
+        onTriggered: {
+            AppController.subtitleOverlayRenderer.configure(
+                JSON.stringify(root.rendererSegments), root.overlayLayoutJson, true,
+                Boolean(root.subtitleTransformDraft));
+            AppController.subtitleOverlayRenderer.seek(comparePreview.positionSeconds);
+        }
+    }
+
+    function syncVolumes() {
+        AppController.manualPreviewAudio.setVolumes(AppController.originalVolume,
+            AppController.ttsVolume, AppController.backgroundMusicVolume);
+    }
+
+    Component.onCompleted: {
+        previewVideoId = AppController.selectedVideoId;
+        restoreEditorView();
+        reloadSegments();
+        syncVolumes();
+        schedulePreview();
+        initialLoadTimer.start();
+        root.forceActiveFocus();
+    }
+    Component.onDestruction: {
+        saveEditorView();
+        layoutSaveTimer.stop();
+        if (layoutReady)
+            AppController.saveManualEditorLayout(
+                Math.round(rightDock.width), Math.round(manualSubtitleTimeline.height), comparing);
+        if (layoutReady)
+            saveWorkspaceLayout();
+        // Close the explicit-save editor before detaching native preview
+        // resources. Unsaved text remains a draft and is never committed by
+        // route teardown.
+        stageInspector.dismissTextEditor();
+        AppController.endManualSubtitleEdit();
+        AppController.releaseEditorPreview();
+    }
+
+    Timer {
+        id: layoutSaveTimer
+        interval: 400
+        repeat: false
+        onTriggered: {
+            if (root.layoutReady && AppController.hasSelectedVideo)
+                AppController.saveManualEditorLayout(
+                    Math.round(rightDock.width), Math.round(manualSubtitleTimeline.height), root.comparing);
+            if (root.layoutReady && AppController.hasSelectedVideo)
+                root.saveWorkspaceLayout();
+        }
+    }
+
+    Timer {
+        id: previewTimer
+        interval: root.initialMediaLoad ? 200 : 100
+        repeat: false
+        onTriggered: AppController.requestEditorPreview(JSON.stringify(root.segments), comparePreview.positionSeconds)
+    }
+
+    Timer {
+        id: initialLoadTimer
+        interval: 900
+        repeat: false
+        onTriggered: {
+            root.initialMediaLoad = false;
+            root.layoutReady = true;
+        }
+    }
+
+    Connections {
+        target: AppController
+
+        function onSourceReplacementRequested(videoId) {
+            if (videoId === root.previewVideoId) {
+                root.sourceReplacementPending = true;
+                previewTimer.stop();
+                overlayTimer.stop();
+                root.selectedSubtitleIndex = -1;
+                root.subtitleTransformActive = false;
+                root.subtitleTransformDraft = null;
+                root.watermarkTransformActive = false;
+                root.subtitleAudioRefreshPending = false;
+                root.subtitleVisualRefreshPending = false;
+                root.ocrRegionDrafts = ({});
+                root.ocrModeDrafts = ({});
+                root.ocrTransformActive = false;
+                comparePreview.releaseMedia();
+            }
+        }
+
+        function onMediaImportChanged() {
+            if (!AppController.mediaImportBusy) {
+                if (root.sourceReplacementPending)
+                    root.restoreEditorView();
+                root.sourceReplacementPending = false;
+            }
+            if (!AppController.mediaImportBusy && String(comparePreview.attachedInputSource).length === 0) {
+                root.reloadSegments();
+                comparePreview.reloadInputMedia();
+                root.schedulePreview();
+            }
+        }
+
+        function onSelectedVideoChanged() {
+            // qmllint disable missing-property
+            if (root.previewVideoId !== AppController.selectedVideoId) {
+                root.sourceReplacementPending = false;
+                root.saveEditorView();
+                comparePreview.resetPlayback();
+                AppController.releaseEditorPreview();
+                root.previewVideoId = AppController.selectedVideoId;
+                root.restoreEditorView();
+                root.selectedSubtitleIndex = -1;
+                root.subtitleTransformActive = false;
+                root.subtitleTransformDraft = null;
+                root.watermarkTransformActive = false;
+                root.ocrRegionDrafts = ({});
+                root.ocrModeDrafts = ({});
+                root.ocrTransformActive = false;
+                root.subtitleAudioRefreshPending = false;
+                root.subtitleVisualRefreshPending = false;
+                root.reloadSegments();
+            }
+            // qmllint enable missing-property
+            if (!AppController.mediaImportBusy && String(comparePreview.attachedInputSource).length === 0)
+                comparePreview.reloadInputMedia();
+            root.schedulePreview();
+        }
+
+        function onManualSubtitleSaved() { root.schedulePreview(); }
+        function onPreviewMediaChanged() { root.schedulePreview(); }
+        function onOriginalVolumeChanged() { root.syncVolumes(); }
+        function onTtsVolumeChanged() { root.syncVolumes(); }
+        function onBackgroundMusicVolumeChanged() { root.syncVolumes(); }
+
+    }
+
+    Connections {
+        target: root.editorModel
+        function onChanged() { root.schedulePreview(); }
+    }
+
+    Connections {
+        target: AppController.manualPreviewAudio
+
+        function onPositionChanged() {
+            // Karaoke follows samples actually presented by QAudioSink, not
+            // the decoder clock that may lead it by one Windows audio buffer.
+            AppController.subtitleOverlayRenderer.seek(AppController.manualPreviewAudio.positionSeconds);
+        }
+    }
+
+    Keys.onPressed: function(event) {
+        if (event.isAutoRepeat && event.key !== Qt.Key_J && event.key !== Qt.Key_L)
+            return;
+        if ((event.modifiers & Qt.ControlModifier) !== 0 && event.key === Qt.Key_Z) {
+            AppController.undoEdit();
+            event.accepted = true;
+        } else if ((event.modifiers & Qt.ControlModifier) !== 0 && event.key === Qt.Key_Y) {
+            AppController.redoEdit();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_S && AppController.hasSelectedVideo) {
+            AppController.splitResultClip("", Math.round(comparePreview.positionSeconds * 1000));
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Delete) {
+            if (root.editorHasSelection && !root.editorSourceSelected)
+                AppController.removeClips(root.selectedEditorClipIds, false);
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Space) {
+            comparePreview.togglePlayback();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_J) {
+            comparePreview.shuttleBackward();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_K) {
+            comparePreview.pausePlayback();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_L) {
+            comparePreview.shuttleForward();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) {
+            manualSubtitleTimeline.zoomAt(
+                manualSubtitleTimeline.width / 2,
+                manualSubtitleTimeline.zoomFactor * 1.2);
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Minus) {
+            manualSubtitleTimeline.zoomAt(
+                manualSubtitleTimeline.width / 2,
+                manualSubtitleTimeline.zoomFactor / 1.2);
+            event.accepted = true;
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: Theme.space8
+
+        ManualEditorToolbar {
+            id: manualEditorToolbar
+            Layout.fillWidth: true
+            resultSelected: String(root.selectedEditorClip.kind || "") === "result"
+            onResultSplitRequested: AppController.splitResultClip("", Math.round(comparePreview.positionSeconds * 1000))
+            Layout.preferredHeight: 42
+            projectTitle: AppController.projectName
+            hasVideo: AppController.hasSelectedVideo
+            hasOutput: AppController.hasSelectedOutput
+            exportEnabled: !AppController.isSelectedVideoProcessing
+                && !AppController.isSelectedVideoQueued && !AppController.videoExportBusy
+            exportBusy: AppController.videoExportBusy
+            hasProject: AppController.hasOpenProject
+            canUndo: AppController.canUndoEdit
+            canRedo: AppController.canRedoEdit
+            hasSelection: root.editorHasSelection
+            sourceSelected: root.editorSourceSelected
+            comparing: root.comparing
+            previewZoomPercent: root.previewZoomPercent
+            outputFormat: AppController.outputFormat
+            outputSpeed: AppController.outputSpeed
+            onOutputSpeedEdited: function(value) {
+                if (!manualEditorToolbar.outputFormatEditable) return;
+                AppController.setManualOutputSpeed(value);
+            }
+            outputFormatEditable: stageInspector.editable && !stageInspector.taskQueued
+            onOutputFormatEdited: function(value) {
+                if (!manualEditorToolbar.outputFormatEditable) return;
+                AppController.outputFormat = value;
+                stageInspector.saveNow();
+            }
+            onUndoRequested: AppController.undoEdit()
+            onRedoRequested: AppController.redoEdit()
+            onCompareToggled: root.comparing = !root.comparing
+            onPreviewZoomInRequested: root.previewZoomPercent = Math.min(400, root.previewZoomPercent + 25)
+            onPreviewZoomOutRequested: root.previewZoomPercent = Math.max(50, root.previewZoomPercent - 25)
+            onSeekRequested: function(offset) {
+                comparePreview.seekTo(Math.max(0, Math.min(comparePreview.durationSeconds,
+                    comparePreview.positionSeconds + offset)));
+            }
+            onExportRequested: {
+                if (!manualEditorToolbar.exportEnabled)
+                    return;
+                stageInspector.saveNow();
+                AppController.requestVideoExport();
+            }
+            onExportProgressRequested: AppController.requestVideoExportProgress()
+            onProjectFolderRequested: AppController.openProjectFolder()
+            onInputVideoRequested: AppController.openInputFile()
+            onVideoFolderRequested: AppController.openVideoFolder()
+            onTechnicalLogRequested: {
+                if (technicalLogLoader.status === Loader.Ready && root.technicalLogDialog)
+                    root.technicalLogDialog.open();
+                else
+                    technicalLogLoader.active = true;
+            }
+            onProjectDeleteRequested: AppController.deleteCurrentProject()
+        }
+
+        SplitView {
+            id: manualEditorSplit
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            orientation: Qt.Vertical
+
+            handle: Rectangle {
+                implicitHeight: 4
+                color: Theme.divider
+            }
+
+            SplitView {
+                SplitView.fillWidth: true
+                SplitView.fillHeight: true
+                SplitView.minimumHeight: 220
+                orientation: Qt.Horizontal
+
+                handle: Rectangle {
+                    implicitWidth: 16
+                    color: SplitHandle.hovered || SplitHandle.pressed ? Theme.interactiveMuted : "transparent"
+
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 3
+                        height: 52
+                        radius: 2
+                        color: parent.SplitHandle.hovered || parent.SplitHandle.pressed
+                            ? Theme.focus : Theme.outlineStrong
+                    }
+                }
+
+                EditorDockGroup {
+                    id: leftDock
+                    SplitView.fillHeight: true
+                    SplitView.preferredWidth: root.leftDockWidth
+                    SplitView.minimumWidth: 180
+                    SplitView.maximumWidth: 480
+                    panelIds: root.panelsFor("left")
+                    activePanelId: root.activePanelFor("left")
+                    onPanelActivated: function(panelId) { root.activatePanel(panelId, "left"); }
+                    onWidthChanged: if (root.layoutReady) layoutSaveTimer.restart()
+                }
+
+                ManualComparePreview {
+                    id: comparePreview
+                    SplitView.fillWidth: true
+                    SplitView.fillHeight: true
+                    SplitView.minimumWidth: 400
+                    emptySource: !AppController.hasSelectedVideo
+                    ocrRegion: root.ocrRegionDraft === null
+                        ? root.previewMedia.ocrRegion || ({})
+                        : Number(root.ocrRegionDraft.width_percent || 0) > 0
+                            ? root.ocrRegionDraft : root.previewMedia.detectedOcrRegion || ({})
+                    ocrLayers: root.ocrLayers
+                    ocrRegionDrafts: root.ocrRegionDrafts
+                    selectedOcrLayerId: root.selectedOcrLayerId
+                    ocrSourceFrameInOutput: AppController.reviewPreviewMedia.ocrSourceFrameInOutput || ({})
+                    ocrInteractive: AppController.canEditSelectedVideo && !AppController.isSelectedVideoQueued
+                        && !AppController.mediaImportBusy
+                    ocrEditing: root.ocrTransformActive
+                    previewZoomPercent: root.previewZoomPercent
+                    onPreviewZoomRequested: function(percent) { root.previewZoomPercent = percent; }
+                    onOcrEditingRequested: root.selectOcrRegion()
+                    onOcrRegionEdited: function(region) { root.setOcrRegionDraft(root.selectedOcrLayerId, region); }
+                    onOcrLayerSelected: function(clipId) { root.selectOcrRegion(clipId); }
+                    onOcrLayerRegionEdited: function(clipId, region) { root.setOcrRegionDraft(clipId, region); }
+                    onOcrApplyRequested: stageInspector.applyImageTreatment()
+                    onOcrDiscardRequested: root.discardOcrRegionDraft()
+                    onRequestUrlImport: root.requestUrlImport()
+                    onRequestDownloadProjectImport: root.requestDownloadProjectImport()
+                    comparing: root.comparing
+                    activeMonitor: root.activeMonitor
+                    onMonitorSelected: function(monitorId) {
+                        root.activeMonitor = monitorId;
+                        layoutSaveTimer.restart();
+                    }
+                    inputSource: root.sourceReplacementPending ? "" : AppController.selectedInputSource
+                    resultSource: root.sourceReplacementPending ? "" : root.currentResultSource
+                    resultBaseSource: root.sourceReplacementPending ? "" : AppController.editorPreviewBaseSource
+                    resultOutputFormat: String(AppController.editorPreviewBaseSource).length > 0
+                        || (String(AppController.editorPreviewSource || "").length === 0 && !root.hasTimelineOutput)
+                        ? String(root.previewMedia.liveOutputFormat || "keep_ratio") : "keep_ratio"
+                    resultThumbnailOutputFormat: String(root.previewMedia.liveOutputFormat || "keep_ratio")
+                    thumbnailSource: AppController.videoThumbnailSource
+                    audioPreparationBusy: AppController.manualPreviewAudio.busy
+                    previewBusy: AppController.editorPreviewBusy || audioPreparationBusy
+                    previewProgress: audioPreparationBusy
+                        ? AppController.manualPreviewAudio.progress : AppController.editorPreviewProgress
+                    subtitleInteractive: root.previewSubtitleIndex >= 0
+                    subtitleEditEnabled: root.subtitleTransformActive
+                        && root.selectedSubtitleIndex === root.previewSubtitleIndex
+                    subtitleText: root.previewSubtitleFragment
+                    subtitleKaraokeProgress: root.previewSubtitleKaraokeProgress
+                    subtitleFontSize: root.activeSubtitleFontSize
+                    subtitlePositionXPercent: root.activeSubtitlePositionX
+                    subtitlePositionYPercent: root.activeSubtitlePositionY
+                    subtitleBoxWidthPercent: root.activeSubtitleBoxWidth
+                    subtitleBoxHeightPercent: root.activeSubtitleBoxHeight
+                    subtitleOutline: root.activeSubtitleOutline
+                    subtitleLayoutWidth: root.subtitleLayoutWidth
+                    subtitleLayoutHeight: root.subtitleLayoutHeight
+                    subtitleReferenceWidth: root.subtitleOutputWidth
+                    subtitleReferenceHeight: root.subtitleOutputHeight
+                    suppressResultAudio: root.subtitleAudioRefreshPending
+                    subtitleLivePreviewEnabled: true
+                    subtitleSprite: AppController.subtitleOverlayRenderer.frame
+                    watermarkText: AppController.watermarkText
+                    watermarkKind: AppController.watermarkKind
+                    watermarkImageSource: AppController.watermarkImageSource
+                    watermarkVideoSource: AppController.watermarkVideoSource
+                    watermarkFontFamily: AppController.watermarkFontFamily
+                    watermarkTextColor: AppController.watermarkTextColor
+                    watermarkBold: AppController.watermarkBold
+                    watermarkItalic: AppController.watermarkItalic
+                    watermarkOpacityPercent: AppController.watermarkOpacityPercent
+                    watermarkOutlinePercent: AppController.watermarkOutlinePercent
+                    watermarkScalePercent: AppController.watermarkScalePercent
+                    watermarkInteractive: AppController.watermarkKind === "image"
+                        ? AppController.watermarkImagePath.length > 0
+                        : AppController.watermarkKind === "video"
+                            ? AppController.watermarkVideoPath.length > 0
+                            : AppController.watermarkText.length > 0
+                    watermarkEditEnabled: root.watermarkTransformActive
+                    editorOverlays: AppController.manualPreviewComposition.overlays
+                    selectedEditorClipIds: root.selectedEditorClipIds
+                    sourceEditDecisions: root.editorModel.document.sequence
+                        ? (root.editorModel.document.sequence.edit_decisions || []) : []
+                    sequenceDurationSeconds: root.editorModel.durationMs / 1000
+                    resultUsesSequenceTimeline: String(AppController.editorPreviewBaseSource || "").length > 0
+                    onPositionSecondsChanged: {
+                        AppController.manualPreviewComposition.setTime(positionSeconds);
+                    }
+                    onEditorClipSelected: function(clipId) {
+                        root.selectEditorClip(clipId);
+                    }
+                    onSubtitleActivated: root.selectSubtitle(root.previewSubtitleIndex, false)
+                    onSubtitleEditingDismissed: root.dismissSubtitleEditor()
+                    onWatermarkActivated: root.selectWatermark()
+                    onWatermarkEditingDismissed: root.dismissWatermarkEditor()
+                    onWatermarkScalePreviewChanged: function(value) {
+                        AppController.watermarkScalePercent = value;
+                    }
+                    onWatermarkScaleCommitted: function(beforeValue, afterValue) {
+                        AppController.watermarkScalePercent = afterValue;
+                        AppController.saveSelectedVideoSettings();
+                        AppController.recordManualWatermarkScaleChange(beforeValue, afterValue);
+                    }
+                    onSubtitleLayoutPreviewChanged: function(fontSize, positionX, positionY, boxWidth, boxHeight) {
+                        root.subtitleTransformDraft = {font_size: fontSize, position_x_percent: positionX,
+                            position_y_percent: positionY, max_width_percent: boxWidth, box_height_percent: boxHeight};
+                    }
+                    onSubtitleLayoutCommitted: function(fontSize, positionX, positionY, boxWidth, boxHeight) {
+                        const patch = {font_size: fontSize, position_x_percent: positionX,
+                            position_y_percent: positionY, max_width_percent: boxWidth, box_height_percent: boxHeight};
+                        if (!AppController.applyTextStyle([], patch, "project")) {
+                            root.subtitleTransformDraft = null;
+                            return;
+                        }
+                        root.subtitleVisualRefreshPending = true;
+                        AppController.subtitleFontSize = fontSize;
+                        AppController.subtitlePositionXPercent = positionX;
+                        AppController.subtitlePositionYPercent = positionY;
+                        AppController.subtitleBoxWidthPercent = boxWidth;
+                        AppController.subtitleBoxHeightPercent = boxHeight;
+                        AppController.saveSelectedVideoSettings();
+                        root.subtitleTransformDraft = null;
+                        root.schedulePreview();
+                    }
+                }
+
+                EditorDockGroup {
+                    id: rightDock
+                    SplitView.fillHeight: true
+                    SplitView.preferredWidth: root.width < 1500 ? 296
+                        : Math.max(300, Math.min(480,
+                            Number(AppController.manualEditorLayout.inspectorWidth || 340)))
+                    SplitView.minimumWidth: 260
+                    SplitView.maximumWidth: 480
+                    panelIds: root.panelsFor("right")
+                    activePanelId: root.activePanelFor("right")
+                    onPanelActivated: function(panelId) { root.activatePanel(panelId, "right"); }
+                    onWidthChanged: if (root.layoutReady) layoutSaveTimer.restart()
+                }
+            }
+
+            SubtitleTimeline {
+                id: manualSubtitleTimeline
+                SplitView.fillWidth: true
+                SplitView.preferredHeight: root.height < 780
+                    ? Math.max(200, Math.min(220, root.timelineDesiredHeight))
+                    : Math.max(220, Math.min(520, root.timelineDesiredHeight))
+                SplitView.minimumHeight: 200
+                SplitView.maximumHeight: 520
+                onHeightChanged: {
+                    if (root.layoutReady)
+                        layoutSaveTimer.restart();
+                }
+                segments: root.segments
+                editorTracks: AppController.hasSelectedVideo
+                    ? root.timelineEditorTracks : root.emptyEditorTracks
+                editorClips: AppController.hasSelectedVideo
+                    ? root.timelineEditorClips : []
+                selectedClipIds: root.editorModel.selectedClipIds
+                selectedIndex: root.selectedSubtitleIndex
+                duration: Math.max(0.1, comparePreview.durationSeconds)
+                position: comparePreview.positionSeconds
+                thumbnailSource: AppController.videoThumbnailSource
+                managedScrubbing: true
+                snappingEnabled: root.timelineSnappingEnabled
+                onScrubStarted: function(seconds) { comparePreview.beginScrub(seconds); }
+                onScrubMoved: function(seconds) { comparePreview.updateScrub(seconds); }
+                onScrubFinished: function(seconds) { comparePreview.endScrub(seconds); }
+                onSegmentSelected: function(index) { root.selectSubtitle(index, true); }
+                onSegmentFocused: function(index) { root.selectSubtitle(index, true); }
+                onClipSelected: function(clipId, additive) {
+                    AppController.manualEditorDocumentModel.selectClip(clipId, additive);
+                    if (!additive)
+                        root.selectEditorClip(clipId);
+                    root.forceActiveFocus();
+                }
+                onTrackSelected: function(trackId) {
+                    const ocr = root.ocrLayers.find(function(layer) { return String(layer.track_id) === trackId; });
+                    if (ocr) {
+                        root.selectOcrRegion(String(ocr.clip_id));
+                        return;
+                    }
+                    AppController.manualEditorDocumentModel.selectTrack(trackId);
+                    const stageByTrack = {
+                        "source-video": 0, "subtitles": 2, "overlays": 7,
+                        "voice": 4, "source-audio": 5, "music": 5
+                    };
+                    if (stageByTrack[trackId] !== undefined)
+                        root.selectedStageIndex = stageByTrack[trackId];
+                    if (["source-video", "source-audio", "music"].indexOf(trackId) >= 0)
+                        root.activatePanel("tasks", "right");
+                    root.forceActiveFocus();
+                }
+                onTrackStateRequested: function(trackId, propertyName, value) {
+                    AppController.setTrackState(trackId, propertyName, value);
+                }
+                onLayerDeleteRequested: function(trackId) {
+                    const ids = root.editorModel.clips.filter(function(clip) {
+                        return String(clip.track_id) === trackId && String(clip.kind) === "ocr";
+                    }).map(function(clip) { return String(clip.clip_id); });
+                    AppController.removeClips(ids, false);
+                    root.forceActiveFocus();
+                }
+                onResultSplitRequested: function(clipId, timeMs) {
+                    AppController.splitResultClip(clipId, timeMs);
+                }
+                onResultDeleteRequested: function(clipId) {
+                    AppController.removeClips([clipId], false);
+                }
+                onClipMoveCommitted: function(clipId, startMs, trackId) {
+                    AppController.moveClip(clipId, startMs, trackId);
+                }
+                onClipTrimCommitted: function(clipId, edge, timeMs) {
+                    // Edge dragging is a non-ripple trim. The explicit cut
+                    // command remains separate and may shift other layers.
+                    AppController.trimClip(clipId, edge, timeMs);
+                }
+                onSeekRequested: function(seconds) {
+                    comparePreview.seekTo(seconds);
+                }
+                onInteractionDismissed: root.dismissSubtitleEditor()
+                onTimingCommitted: function(index, start, end) {
+                    const accepted = root.commitSubtitleTiming(index, start, end);
+                    manualSubtitleTimeline.resolveTimingCommit(index, accepted);
+                }
+            }
+        }
+
+        Item {
+            id: timelineResizeGrip
+            Layout.fillWidth: true
+            Layout.preferredHeight: 12
+            property real dragStartY: 0
+            property real dragStartHeight: 0
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: 36
+                height: 3
+                radius: 2
+                color: resizeArea.containsMouse || resizeArea.pressed
+                    ? Theme.focus : Theme.outlineStrong
+            }
+            MouseArea {
+                id: resizeArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.SizeVerCursor
+                onPressed: function(mouse) {
+                    timelineResizeGrip.dragStartY = timelineResizeGrip.mapToItem(root, mouse.x, mouse.y).y;
+                    timelineResizeGrip.dragStartHeight = manualSubtitleTimeline.height;
+                }
+                onPositionChanged: function(mouse) {
+                    if (!pressed)
+                        return;
+                    const currentY = timelineResizeGrip.mapToItem(root, mouse.x, mouse.y).y;
+                    root.timelineDesiredHeight = Math.max(200, Math.min(520,
+                        Math.round(timelineResizeGrip.dragStartHeight
+                            + timelineResizeGrip.dragStartY - currentY)));
+                }
+                onReleased: layoutSaveTimer.restart()
+            }
+        }
+    }
+
+    ManualToolNavigator {
+        parent: root.panelHost("tools")
+        anchors.fill: parent
+        visible: root.isPanelActive("tools")
+        tools: [root.toolModel[0], root.toolModel[1], root.toolModel[2],
+            Object.assign({}, root.toolModel[3], {label: qsTr("Che phụ đề")}),
+            {label: qsTr("Watermark"), stageIndex: 7},
+            Object.assign({}, root.toolModel[4], {stageIndex: 4}),
+            Object.assign({}, root.toolModel[5], {stageIndex: 5}),
+            {label: qsTr("Nhập SRT"), stageIndex: 9,
+                enabled: !AppController.isProcessing && !AppController.isSelectedVideoQueued
+                    && !AppController.videoExportBusy && !AppController.mediaImportBusy},
+            {label: qsTr("Xóa SRT"), stageIndex: 10,
+                enabled: AppController.manualHasImportedSrt && !AppController.isProcessing && !AppController.isSelectedVideoQueued
+                    && !AppController.videoExportBusy && !AppController.mediaImportBusy},
+            {label: qsTr("Xuất SRT"), stageIndex: 8,
+                enabled: !AppController.isProcessing && !AppController.isSelectedVideoQueued
+                    && !AppController.videoExportBusy && !AppController.mediaImportBusy}]
+        currentIndex: root.selectedStageIndex
+        onToolSelected: function(index) {
+            if (index === 8 || index === 9 || index === 10) {
+                if (AppController.isProcessing || AppController.isSelectedVideoQueued
+                        || AppController.videoExportBusy || AppController.mediaImportBusy)
+                    return;
+                root.dismissSubtitleEditor();
+                if (index === 9)
+                    srtImportLoader.invoke("openForSelection");
+                else if (index === 10)
+                    AppController.removeSelectedSrt(AppController.selectedVideoId);
+                else
+                    srtExportLoader.invoke("openForSelection");
+                return;
+            }
+            root.selectedStageIndex = index;
+            root.warmTool(index);
+            root.activatePanel("tasks", "right");
+        }
+    }
+
+    ManualSelectionPanel {
+        parent: root.panelHost("properties")
+        anchors.fill: parent
+        visible: root.isPanelActive("properties")
+        clipData: root.selectedEditorClip
+        onOpenImageToolRequested: {
+            root.selectedStageIndex = root.watermarkToolIndex;
+            root.activatePanel("tasks", "right");
+        }
+        onWatermarkSettingsEdited: stageInspector.scheduleSave()
+    }
+
+    ManualStageInspector {
+        id: stageInspector
+        parent: root.panelHost("tasks")
+        anchors.fill: parent
+        visible: root.isPanelActive("tasks")
+        currentStage: root.selectedStageIndex
+        ocrRegionDraft: root.ocrRegionDraft
+        ocrLayers: root.ocrLayers
+        selectedOcrLayer: root.selectedOcrLayer
+        ocrModeDrafts: root.ocrModeDrafts
+        onOcrModeDraftRequested: function(clipId, mode) { root.ocrModeDrafts = Object.assign({}, root.ocrModeDrafts, {[clipId]: mode}); }
+        onOcrLayerSelected: function(clipId) { root.selectOcrRegion(clipId); }
+        onOcrRegionApplied: function(clipId) { root.discardOcrRegionDraft(clipId); }
+        onOcrRegionDraftRequested: function(region) { root.setOcrRegionDraft(root.selectedOcrLayerId, region); root.ocrTransformActive = true; }
+        onOcrRegionDiscardRequested: root.discardOcrRegionDraft()
+        toolModel: root.toolModel
+        subtitleSegments: root.segments
+        selectedSubtitleIndex: root.selectedSubtitleIndex
+        selectedEditorClip: root.selectedEditorClip
+        onSubtitleSelected: function(index) { root.selectSubtitle(index, true); }
+        onSubtitleDialogSelectionRequested: function(index) {
+            root.selectSubtitleInDialog(index);
+        }
+        onSubtitleEditorClosed: root.finishSubtitleDialogEditing()
+        onSourceLinkRequested: root.requestUrlImport()
+        onSettingsCommitted: root.schedulePreview()
+        onEditorSeekRequested: function(seconds) { comparePreview.seekTo(seconds); }
+        onToolSelected: function(index) {
+            root.dismissSubtitleEditor();
+            root.dismissWatermarkEditor();
+            root.selectedStageIndex = index;
+            root.warmTool(index);
+        }
+    }
+
+    LazyDialogLoader {
+        id: srtImportLoader
+        sourceComponent: Component {
+            SrtImportDialog { onClosed: srtImportLoader.release() }
+        }
+    }
+
+    LazyDialogLoader {
+        id: srtExportLoader
+        sourceComponent: Component {
+            SrtExportDialog { onClosed: srtExportLoader.release() }
+        }
+    }
+
+    Loader {
+        id: technicalLogLoader
+        active: false
+        asynchronous: false
+        onLoaded: if (status === Loader.Ready && root.technicalLogDialog) root.technicalLogDialog.open()
+        sourceComponent: Component {
+            ActivityLogDialog {
+                logText: AppController.logs
+                detailText: qsTr("Log kỹ thuật")
+                onClosed: technicalLogLoader.active = false
+            }
+        }
+    }
+
+}

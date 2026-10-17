@@ -1,0 +1,225 @@
+import ast
+import hashlib
+import importlib.util
+import json
+import subprocess
+import os
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from linsub.services.resource_packs import ResourcePackDefinition, ResourcePackError, ResourcePackManager
+
+
+class ConsoleTests(unittest.TestCase):
+    def test_background_process_calls_request_no_console(self):
+        for path in (ROOT / "src/linsub").rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"
+                        and node.func.attr in {"run", "Popen", "check_output", "check_call", "call"}):
+                    continue
+                # Intentional, user-requested GUI installer and Linux opener.
+                if path.name == "app_update_controller.py" and isinstance(node.args[0], ast.List):
+                    continue
+                if path.name == "media.py" and "xdg-open" in ast.unparse(node):
+                    continue
+                if path.name == "media_subprocess.py":
+                    continue  # tested adapter below sets flags in kwargs
+                with self.subTest(path=str(path), line=node.lineno):
+                    self.assertIn("creationflags", [keyword.arg for keyword in node.keywords])
+
+    def test_pydub_adapter_is_scoped_and_preserves_existing_flags(self):
+        from linsub.utils import audio
+        from pydub import audio_segment, utils
+
+        original = subprocess.Popen
+        with patch("linsub.utils.media_subprocess.subprocess.Popen") as popen, \
+                patch.object(subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            audio_segment.subprocess.Popen(["ffmpeg"], creationflags=8)
+            self.assertEqual(popen.call_args.kwargs["creationflags"], 0x08000008)
+            utils.Popen(["ffprobe"])
+            self.assertEqual(popen.call_args.kwargs["creationflags"], 0x08000000)
+            self.assertIs(audio.AudioSegment, audio_segment.AudioSegment)
+        self.assertIs(subprocess.Popen, original)
+
+    def test_library_probe_and_decode_calls_are_also_hidden(self):
+        from linsub.utils.audio import _MediaSubprocess
+
+        with patch.object(subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            for name in ("run", "check_output", "call", "check_call"):
+                with self.subTest(name=name), patch.object(subprocess, name) as method:
+                    getattr(_MediaSubprocess(), name)(["ffprobe"], creationflags=8)
+                    self.assertEqual(method.call_args.kwargs["creationflags"], 0x08000008)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows child-console regression")
+    def test_actual_child_has_no_console(self):
+        from linsub.utils.audio import _hidden_popen
+
+        process = _hidden_popen([sys.executable, "-c",
+                                "import ctypes; print(ctypes.windll.kernel32.GetConsoleWindow())"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate(timeout=15)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(stdout.strip(), "0")
+
+
+class OfflinePackTests(unittest.TestCase):
+    def test_production_engine_uses_validated_core_root_and_moved_models(self):
+        from linsub.core import paths
+        from linsub.update.state import provision
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "app"
+            resources = root / "another-drive-resources"
+            engine = resources / "engines/cpu/3/LinSubEngine.exe"
+            engine.parent.mkdir(parents=True)
+            engine.touch()
+            provision(app)
+            (app / "runtime/data").mkdir(parents=True)
+            (app / "runtime/data/resource-storage.json").write_text(json.dumps({"version": 1, "path": str(resources)}))
+            environment = {"LINSUB_ENGINE_APP_ROOT": str(app), "LINSUB_HOME": "C:/wrong/home",
+                           "MODELS_DIR": "C:/wrong/models", "RUNTIME_DATA_DIR": "C:/wrong/data"}
+            with patch.dict(os.environ, environment, clear=True), patch.object(sys, "frozen", True, create=True), \
+                    patch.object(sys, "executable", str(engine)):
+                self.assertEqual(paths.install_root(), app.resolve())
+                self.assertEqual(paths.models_dir(), resources.resolve() / "models")
+                self.assertEqual(paths.runtime_data_dir(), app.resolve() / "runtime/data")
+                os.environ.pop("LINSUB_ENGINE_APP_ROOT")
+                with self.assertRaisesRegex(ValueError, "LinSub"):
+                    paths.install_root()
+
+    def test_core_cleans_inherited_overrides_before_starting_engine(self):
+        from linsub.core import paths
+
+        environment = {"LINSUB_HOME": "C:/wrong/home", "MODELS_DIR": "C:/wrong/models",
+                       "LINSUB_ENGINE_APP_ROOT": "C:/wrong/app", "UNRELATED_SETTING": "keep"}
+        with patch.dict(os.environ, environment, clear=True), patch.object(paths, "is_frozen", return_value=True), \
+                patch.object(paths, "install_root", return_value=Path("D:/SelectedLinSub")):
+            worker = paths.engine_environment()
+            self.assertEqual(worker["LINSUB_ENGINE_APP_ROOT"], str(Path("D:/SelectedLinSub")))
+            self.assertNotIn("MODELS_DIR", worker)
+            self.assertNotIn("LINSUB_HOME", worker)
+            self.assertEqual(worker["UNRELATED_SETTING"], "keep")
+            self.assertEqual(os.environ["LINSUB_HOME"], environment["LINSUB_HOME"])
+
+    def test_frozen_core_reads_catalog_beside_executable_not_only_internal(self):
+        from linsub.services.resource_packs import _load_release_pack_metadata, built_in_pack_definitions
+
+        with tempfile.TemporaryDirectory() as temporary:
+            core = Path(temporary)
+            internal = core / "_internal"
+            internal.mkdir()
+            payload = dict(schema=1, protocol_version=1, packs={"engine-cpu-py313": dict(
+                version="2", url="", offline_archive="engine-cpu-py313-2.zip", sha256="a" * 64,
+                download_size=100, installed_size=200)})
+            (core / "RESOURCE-PACKS.json").write_text(json.dumps(payload), encoding="utf-8")
+            (internal / "resource-pack-manifest.json").write_text("[]", encoding="utf-8")
+            with patch("linsub.core.paths.project_root", return_value=core), \
+                    patch("linsub.core.paths.bundle_root", return_value=internal):
+                self.assertEqual(_load_release_pack_metadata(), payload["packs"])
+                definitions = {item.pack_id: item for item in built_in_pack_definitions()}
+                self.assertEqual(definitions["engine-cpu-py313"].offline_archive, "engine-cpu-py313-2.zip")
+                self.assertEqual(definitions["engine-cpu-py313"].version, "2")
+
+    def test_installer_pointer_and_utf16_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            companion = root / "tài nguyên"
+            companion.mkdir()
+            with patch("linsub.services.resource_packs.install_root", return_value=root):
+                for encoding in ("utf-8-sig", "utf-16"):
+                    (root / "offline-resources.ini").write_text(
+                        f"[resources]\npath={companion}\n", encoding=encoding)
+                    self.assertEqual(ResourcePackManager._offline_root(), companion)
+                (root / "offline-resources.ini").write_text("[resources]\npath=../outside\n", encoding="utf-8")
+                with self.assertRaises(ResourcePackError):
+                    ResourcePackManager._offline_root()
+
+    def _fixture(self, root):
+        companion = root / "offline-resources"
+        companion.mkdir()
+        archive = companion / "engine-cpu-py313-2.zip"
+        engine = dict(pack_id="engine-cpu-py313", profile="cpu", version="2", protocol_version=1,
+                      smoke_command=["engine.exe", "--smoke"])
+        from linsub.services.resource_packs import ENGINE_REQUIRED_COMMANDS
+        for command in ENGINE_REQUIRED_COMMANDS["engine-cpu-py313"]:
+            engine.setdefault(command, ["engine.exe", "--" + command])
+        with zipfile.ZipFile(archive, "w") as package:
+            package.writestr("engine.json", json.dumps(engine))
+            package.writestr("engine.exe", b"fixture executable")
+        definition = ResourcePackDefinition("engine-cpu-py313", "CPU", "processor", "2", "engine",
+            engine_modules=("test_missing_ai_module",), offline_archive=archive.name,
+            archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(), download_size=archive.stat().st_size,
+            installed_size=len(json.dumps(engine).encode()) + len(b"fixture executable"))
+        return archive, definition, engine
+
+    def test_offline_install_verifies_without_network_or_duplicate_zip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive, definition, engine = self._fixture(root)
+            manager = ResourcePackManager((definition,))
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                stack.enter_context(patch("linsub.services.resource_packs.install_root", return_value=root))
+                stack.enter_context(patch("linsub.services.resource_packs.engines_dir", return_value=root / "engines"))
+                stack.enter_context(patch("linsub.services.resource_packs.resource_packages_dir", return_value=root / "packages"))
+                stack.enter_context(patch.object(manager, "_verify_engine_staging", return_value=engine))
+                stack.enter_context(patch.object(manager, "requirement_summary", return_value={"freeBytes": 10**12, "requiredBytes": 1}))
+                network = stack.enter_context(patch("urllib.request.urlopen", side_effect=AssertionError("Network forbidden")))
+                self.assertTrue(manager.archive_available(definition.pack_id))
+                self.assertEqual(manager.download_bytes(definition.pack_id), 0)
+                events = []
+                manager.install(definition.pack_id, lambda _, event: events.append(event.state))
+                self.assertEqual(manager.status(definition.pack_id), "installed")
+                self.assertEqual(events[-1], "ready")
+                self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), definition.archive_sha256)
+                self.assertFalse((root / "packages" / archive.name).exists())
+                network.assert_not_called()
+
+    def test_corrupt_offline_pack_is_rejected_before_executing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive, definition, _ = self._fixture(root)
+            archive.write_bytes(b"x" * archive.stat().st_size)
+            manager = ResourcePackManager((definition,))
+            with patch.object(manager, "_offline_root", return_value=archive.parent), \
+                    patch.object(manager, "requirement_summary", return_value={"freeBytes": 10**12, "requiredBytes": 1}), \
+                    patch.object(manager, "_verify_engine_staging") as smoke:
+                with self.assertRaisesRegex(ResourcePackError, "bị hỏng"):
+                    manager.install(definition.pack_id, lambda *_: None)
+                smoke.assert_not_called()
+                self.assertEqual(manager._active, set())
+
+    def test_invalid_filename_and_missing_companion_fail_closed(self):
+        definition = ResourcePackDefinition("test", "Test", "processor", "1", "engine",
+            engine_modules=("test_missing_ai_module",), offline_archive="../evil.zip")
+        manager = ResourcePackManager((definition,))
+        self.assertFalse(manager.archive_available("test"))
+        with self.assertRaises(ResourcePackError):
+            manager.install("test", lambda *_: None)
+
+    def test_offline_catalog_remains_forbidden_for_public_release(self):
+        spec = importlib.util.spec_from_file_location("verify_catalog", ROOT / "scripts/verify-resource-pack-manifest.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "packs.json"
+            payload = dict(schema=1, protocol_version=1, packs={
+                name: dict(version="1", url="", sha256="a" * 64, download_size=1,
+                           installed_size=1, offline_archive=name + "-1.zip") for name in module.ENGINE_PACKS})
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(module.validate_manifest(path, strict=False)["release_ready"], 0)
+            with self.assertRaisesRegex(RuntimeError, "engineering"):
+                module.validate_manifest(path, strict=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

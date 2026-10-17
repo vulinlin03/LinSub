@@ -1,0 +1,511 @@
+pragma ComponentBehavior: Bound
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import QtMultimedia
+import "."
+
+Control {
+    id: root
+
+    property var model: []
+    property string currentValue: ""
+    property string activeCategory: ""
+    property bool allowVoiceClone: false
+    property bool allowMultipleSpeakers: false
+    property bool previewEnabled: true
+    property string previewSource: ""
+    property string previewState: "idle"
+    property string requestedVoice: ""
+    signal selected(string voice)
+    signal previewRequested(string voice)
+    signal cloneRequested()
+
+    implicitHeight: 42
+    leftPadding: Theme.space12
+    rightPadding: Theme.space12
+    hoverEnabled: true
+    focusPolicy: Qt.StrongFocus
+    Accessible.name: displayLabel()
+
+    function isClone(value) { return value === "omnivoice:clone" || value === "vieneu:clone" }
+
+    function visibleOptions() {
+        const result = []
+        const source = model || []
+        for (let i = 0; i < source.length; ++i) {
+            const option = source[i]
+            if (allowVoiceClone || !isClone(String(option.voice || "")))
+                result.push(option)
+        }
+        if (allowMultipleSpeakers)
+            result.push({ voice: "omnivoice:multiple", label: qsTr("Nhận diện nhiều người nói"),
+                category: "source", categoryLabel: qsTr("Giọng từ video") });
+        return result
+    }
+
+    function categories() {
+        const result = []
+        const seen = {}
+        const options = visibleOptions()
+        for (let i = 0; i < options.length; ++i) {
+            if (isClone(String(options[i].voice || ""))
+                || String(options[i].voice || "") === "omnivoice:multiple")
+                continue
+            const key = String(options[i].category || "voices")
+            if (!seen[key]) {
+                result.push({
+                    "key": key,
+                    "label": String(options[i].categoryLabel || key)
+                })
+                seen[key] = true
+            }
+        }
+        return result
+    }
+
+    function voicesIn(category) {
+        const result = []
+        const options = visibleOptions()
+        for (let i = 0; i < options.length; ++i) {
+            if (!isClone(String(options[i].voice || ""))
+                && String(options[i].voice || "") !== "omnivoice:multiple"
+                && String(options[i].category || "voices") === category)
+                result.push(options[i])
+        }
+        return result
+    }
+
+    function specialOptions() {
+        const result = []
+        if (allowVoiceClone) {
+            let clone = { voice: "omnivoice:clone", available: false, previewAvailable: false }
+            for (const option of model || []) {
+                if (isClone(String(option.voice || "")))
+                    clone = option
+            }
+            result.push(Object.assign({}, clone, { label: qsTr("Nhân bản giọng") }))
+        }
+        if (allowMultipleSpeakers)
+            result.push({ voice: "omnivoice:multiple", label: qsTr("Nhận diện nhiều người nói") })
+        return result
+    }
+
+    function chooseOption(option) {
+        voicePopup.close()
+        if (isClone(String(option.voice || "")))
+            cloneRequested()
+        else
+            selected(String(option.voice || ""))
+    }
+
+    function displayLabel() {
+        if (currentValue === "omnivoice:multiple")
+            return qsTr("Nhận diện nhiều người nói")
+        if (isClone(currentValue))
+            return qsTr("Giọng đã nhân bản")
+        for (let i = 0; i < model.length; ++i) {
+            if (String(model[i].voice || "") === currentValue)
+                return String(model[i].label || currentValue)
+        }
+        return currentValue
+    }
+
+    function syncCategory() {
+        const options = visibleOptions()
+        for (let i = 0; i < options.length; ++i) {
+            if (String(options[i].voice || "") === currentValue
+                && !isClone(currentValue) && currentValue !== "omnivoice:multiple") {
+                activeCategory = String(options[i].category || "voices")
+                return
+            }
+        }
+        const available = categories()
+        activeCategory = available.length > 0 ? available[0].key : ""
+    }
+
+    function togglePreview(voice) {
+        if (!previewEnabled || voice === "omnivoice:multiple" || isClone(voice))
+            return
+        const value = String(voice || "")
+        if (requestedVoice === value && previewState === "ready") {
+            if (voicePlayer.playbackState === MediaPlayer.PlayingState)
+                voicePlayer.pause()
+            else
+                voicePlayer.play()
+            return
+        }
+        voicePlayer.stop()
+        requestedVoice = value
+        previewRequested(value)
+        previewStartTimer.restart()
+    }
+
+    function playPreparedPreview() {
+        if (requestedVoice.length > 0 && previewState === "ready" && previewSource.length > 0) {
+            voicePlayer.source = previewSource
+            voicePlayer.play()
+        }
+    }
+
+    function stopPreview() {
+        voicePlayer.stop()
+        requestedVoice = ""
+    }
+
+    function positionPopup() {
+        if (!voicePopup.parent)
+            return;
+        const point = root.mapToItem(voicePopup.parent, 0, 0);
+        voicePopup.x = Math.max(Theme.space8,
+            Math.min(point.x, voicePopup.parent.width - voicePopup.width - Theme.space8));
+        const below = point.y + root.height + Theme.space4;
+        voicePopup.y = below + voicePopup.height <= voicePopup.parent.height - Theme.space8
+            ? below : Math.max(Theme.space8, point.y - voicePopup.height - Theme.space4);
+        const groups = root.categories();
+        for (let index = 0; index < groups.length; ++index) {
+            if (groups[index].key === root.activeCategory) {
+                categoryList.positionViewAtIndex(index, ListView.Contain);
+                break;
+            }
+        }
+    }
+
+    onModelChanged: {
+        voicePlayer.stop()
+        requestedVoice = ""
+        syncCategory()
+    }
+    onCurrentValueChanged: {
+        voicePlayer.stop()
+        syncCategory()
+    }
+    onAllowVoiceCloneChanged: syncCategory()
+    onWidthChanged: if (voicePopup.visible) popupLayoutTimer.restart()
+    onHeightChanged: if (voicePopup.visible) popupLayoutTimer.restart()
+    onPreviewEnabledChanged: if (!previewEnabled) voicePlayer.stop()
+    Component.onCompleted: syncCategory()
+    onPreviewStateChanged: previewStartTimer.restart()
+    onPreviewSourceChanged: {
+        if (!previewSource) {
+            voicePlayer.stop()
+            requestedVoice = ""
+        }
+        previewStartTimer.restart()
+    }
+
+    Timer {
+        id: popupLayoutTimer
+        interval: 0
+        onTriggered: if (voicePopup.visible) root.positionPopup()
+    }
+
+    Connections {
+        target: voicePopup.parent
+        function onWidthChanged() {
+            if (voicePopup.visible) popupLayoutTimer.restart();
+        }
+        function onHeightChanged() {
+            if (voicePopup.visible) popupLayoutTimer.restart();
+        }
+    }
+
+    Timer {
+        id: previewStartTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.playPreparedPreview()
+    }
+
+    DefaultAudioOutput {
+        id: voicePreviewOutput
+        volume: 1.0
+    }
+
+    MediaPlayer {
+        id: voicePlayer
+        audioOutput: voicePreviewOutput
+        onMediaStatusChanged: function() {
+            if (voicePlayer.mediaStatus === MediaPlayer.EndOfMedia)
+                voicePlayer.stop()
+        }
+    }
+
+    contentItem: RowLayout {
+        spacing: Theme.space8
+        Text {
+            Layout.fillWidth: true
+            text: root.displayLabel()
+            color: root.enabled ? Theme.text : Theme.textDisabled
+            font.pixelSize: Theme.body
+            elide: Text.ElideRight
+            verticalAlignment: Text.AlignVCenter
+        }
+        AppIcon {
+            glyph: voicePopup.opened ? "\uE70E" : "\uE70D"
+            iconColor: root.enabled ? Theme.textMuted : Theme.textDisabled
+            iconSize: Theme.iconSmall
+        }
+    }
+
+    background: Rectangle {
+        color: root.hovered ? Theme.surfaceMuted : Theme.input
+        radius: Theme.radiusSmall
+        border.width: root.visualFocus ? 2 : 1
+        border.color: root.visualFocus ? Theme.controlFocus
+            : voicePopup.opened || root.hovered ? Theme.outlineStrong : Theme.outline
+    }
+
+    TapHandler {
+        enabled: root.enabled
+        property bool popupWasVisibleOnPress: false
+        onPressedChanged: if (pressed) popupWasVisibleOnPress = voicePopup.visible
+        onTapped: {
+            if (popupWasVisibleOnPress || voicePopup.visible)
+                voicePopup.close()
+            else
+                voicePopup.open()
+        }
+    }
+    Keys.onReturnPressed: function(event) {
+        voicePopup.visible ? voicePopup.close() : voicePopup.open()
+        event.accepted = true
+    }
+    Keys.onSpacePressed: function(event) {
+        voicePopup.visible ? voicePopup.close() : voicePopup.open()
+        event.accepted = true
+    }
+
+    Popup {
+        id: voicePopup
+        objectName: "voicePickerPopup"
+        parent: Overlay.overlay
+        popupType: Popup.Item
+        modal: false
+        focus: true
+        margins: Theme.space8
+        width: Math.min(440, Math.max(280, root.width), parent.width - Theme.space16)
+        height: Math.min(440, parent.height - Theme.space16,
+            126 + root.specialOptions().length * 48 + Math.max(1, voiceList.count) * 46)
+        onAboutToShow: root.positionPopup()
+        onOpened: popupLayoutTimer.restart()
+        onHeightChanged: if (visible) popupLayoutTimer.restart()
+        onWidthChanged: if (visible) popupLayoutTimer.restart()
+        padding: Theme.space8
+        // Keep visibility stable until the trigger has handled the release.
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnReleaseOutside
+        onClosed: {
+            voicePlayer.stop()
+            root.requestedVoice = ""
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 6
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space8
+
+                Text {
+                    Layout.fillWidth: true
+                    text: qsTr("Giọng đọc")
+                    color: Theme.text
+                    font.pixelSize: Theme.body
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
+                }
+
+                Text {
+                    Layout.maximumWidth: voicePopup.availableWidth * 0.55
+                    text: root.displayLabel()
+                    color: Theme.interactive
+                    font.pixelSize: Theme.caption
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                    horizontalAlignment: Text.AlignRight
+                    textFormat: Text.PlainText
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.divider
+            }
+
+            Repeater {
+                model: root.specialOptions()
+                delegate: ItemDelegate {
+                    id: specialDelegate
+                    required property var modelData
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+                    highlighted: String(modelData.voice) === root.currentValue
+                    focusPolicy: Qt.TabFocus
+                    onClicked: root.chooseOption(modelData)
+                    contentItem: RowLayout {
+                        spacing: Theme.space8
+                        Text {
+                            Layout.fillWidth: true
+                            text: String(specialDelegate.modelData.label)
+                            color: Theme.text
+                            font.pixelSize: Theme.body
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+                        Text {
+                            visible: specialDelegate.modelData.available === false
+                            text: qsTr("Thêm mẫu")
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.caption
+                        }
+                        AppIcon {
+                            visible: specialDelegate.highlighted
+                            glyph: "\uE73E"
+                            iconColor: Theme.interactive
+                            iconSize: Theme.iconSmall
+                        }
+                    }
+                    background: Rectangle {
+                        color: specialDelegate.highlighted ? Theme.interactiveMuted
+                            : specialDelegate.hovered ? Theme.surfaceMuted : "transparent"
+                        radius: Theme.radiusSmall
+                        border.width: specialDelegate.visualFocus ? 1 : 0
+                        border.color: Theme.controlFocus
+                    }
+                }
+            }
+
+            Rectangle {
+                visible: root.specialOptions().length > 0
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.divider
+            }
+
+            ListView {
+                id: categoryList
+                Layout.fillWidth: true
+                Layout.preferredHeight: 38
+                orientation: ListView.Horizontal
+                model: root.categories()
+                clip: true
+                spacing: Theme.space4
+                reuseItems: true
+                delegate: ItemDelegate {
+                    id: categoryDelegate
+                    required property var modelData
+                    width: Math.max(92, categoryLabel.implicitWidth + Theme.space12 * 2)
+                    height: 36
+                    highlighted: String(modelData.key) === root.activeCategory
+                    focusPolicy: Qt.NoFocus
+                    onClicked: root.activeCategory = String(modelData.key)
+                    contentItem: RowLayout {
+                        Text {
+                            id: categoryLabel
+                            Layout.fillWidth: true
+                            text: String(categoryDelegate.modelData.label || "")
+                            color: categoryDelegate.highlighted ? Theme.text : Theme.textMuted
+                            font.pixelSize: Theme.caption
+                            font.weight: categoryDelegate.highlighted ? Font.DemiBold : Font.Medium
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+                    }
+                    background: Rectangle {
+                        color: categoryDelegate.highlighted ? Theme.interactiveMuted
+                            : (categoryDelegate.hovered ? Theme.surfaceMuted : "transparent")
+                        radius: Theme.radiusSmall
+                    }
+                }
+                ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+            }
+
+            ListView {
+                id: voiceList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                model: root.voicesIn(root.activeCategory)
+                clip: true
+                spacing: 2
+                reuseItems: true
+                delegate: ItemDelegate {
+                    id: voiceDelegate
+                    required property var modelData
+                    width: ListView.view.width
+                    height: 44
+                    enabled: modelData.available === undefined || modelData.available !== false
+                    highlighted: String(modelData.voice || "") === root.currentValue
+                    focusPolicy: Qt.NoFocus
+                    onClicked: {
+                        root.selected(String(modelData.voice || ""))
+                        voicePopup.close()
+                    }
+                    contentItem: RowLayout {
+                        spacing: Theme.space8
+                        Text {
+                            Layout.fillWidth: true
+                            text: String(voiceDelegate.modelData.label || voiceDelegate.modelData.voice || "")
+                            color: !voiceDelegate.enabled ? Theme.textDisabled : Theme.text
+                            font.pixelSize: Theme.body
+                            font.weight: voiceDelegate.highlighted ? Font.DemiBold : Font.Normal
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+                        AppIcon {
+                            visible: voiceDelegate.highlighted
+                            glyph: "\uE73E"
+                            iconColor: Theme.interactive
+                            iconSize: Theme.iconSmall
+                        }
+                        Item {
+                            visible: root.previewEnabled && String(voiceDelegate.modelData.voice || "") !== "omnivoice:multiple"
+                            Layout.preferredWidth: visible ? 30 : 0
+                            Layout.preferredHeight: 30
+
+                            StudioIconButton {
+                                anchors.fill: parent
+                                visible: !(root.requestedVoice === String(voiceDelegate.modelData.voice || "")
+                                    && root.previewState === "preparing")
+                                enabled: voiceDelegate.enabled
+                                    && (voiceDelegate.modelData.previewAvailable === undefined
+                                        || voiceDelegate.modelData.previewAvailable === true)
+                                iconName: root.requestedVoice === String(voiceDelegate.modelData.voice || "")
+                                    && voicePlayer.playbackState === MediaPlayer.PlayingState ? "pause" : "play"
+                                toolTipText: !enabled ? qsTr("Chưa có mẫu giọng")
+                                    : root.requestedVoice === String(voiceDelegate.modelData.voice || "")
+                                        && voicePlayer.playbackState === MediaPlayer.PlayingState
+                                        ? qsTr("Tạm dừng mẫu giọng") : qsTr("Phát mẫu giọng")
+                                showToolTip: !enabled
+                                onClicked: root.togglePreview(String(voiceDelegate.modelData.voice || ""))
+                            }
+
+                            BusyIndicator {
+                                anchors.centerIn: parent
+                                width: 18
+                                height: 18
+                                running: visible
+                                visible: root.requestedVoice === String(voiceDelegate.modelData.voice || "")
+                                    && root.previewState === "preparing"
+                                Accessible.name: qsTr("Đang mở mẫu giọng")
+                            }
+                        }
+                    }
+                    background: Rectangle {
+                        color: voiceDelegate.highlighted ? Theme.interactiveMuted
+                            : (voiceDelegate.hovered ? Theme.surfaceMuted : "transparent")
+                        radius: Theme.radiusSmall
+                    }
+                }
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            }
+        }
+
+        background: Rectangle {
+            color: Theme.surfaceElevated
+            radius: Theme.radius
+            border.width: 1
+            border.color: Theme.outlineStrong
+        }
+    }
+}

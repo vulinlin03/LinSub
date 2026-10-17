@@ -1,0 +1,1054 @@
+import json
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+import stat
+from types import SimpleNamespace
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from linsub.desktop.qml_controller import LinSubController
+from linsub.desktop.models import ProjectGridModel, ProjectListModel
+from linsub.schemas.video import VideoConfig
+from linsub.services import video_store
+from linsub.services import project_store
+from linsub.services.desktop_videos import create_desktop_video, migrate_legacy_single_export
+
+
+def _video(video_id, filename, project_name, project_type, status, progress, updated_at):
+    return SimpleNamespace(
+        video_id=video_id,
+        original_filename=filename,
+        project_name=project_name,
+        project_directory="D:/LinSubData/projects",
+        project_type=project_type,
+        status=status,
+        progress=progress,
+        updated_at=updated_at,
+        files={},
+    )
+
+
+class ProjectGroupingTests(unittest.TestCase):
+    def test_storage_cleanup_removes_only_verified_empty_legacy_exports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = {"project_root": str(root), "project_directory": str(root.parent),
+                      "key": "project:example", "project_type": "manual"}
+            exports = root / "exports"
+            exports.mkdir()
+            self.assertFalse(project_store.remove_empty_legacy_exports(record))
+            (root / project_store.PROJECT_MANIFEST_NAME).write_text(json.dumps(record), encoding="utf-8")
+            keep = exports / "old-export.mp4"
+            keep.write_bytes(b"keep")
+            self.assertFalse(project_store.remove_empty_legacy_exports(record))
+            self.assertTrue(keep.is_file())
+            keep.unlink()
+            self.assertTrue(project_store.remove_empty_legacy_exports(record))
+            self.assertFalse(exports.exists())
+
+    def test_editing_video_settings_does_not_reorder_legacy_project_cards(self):
+        older_project = _video(
+            "older", "older.mp4", "Older", "single", "pending", 0,
+            "2026-08-14T15:00:00Z",
+        )
+        older_project.created_at = "2026-08-14T10:00:00Z"
+        newer_project = _video(
+            "newer", "newer.mp4", "Newer", "single", "pending", 0,
+            "2026-08-14T12:00:00Z",
+        )
+        newer_project.created_at = "2026-08-14T12:00:00Z"
+
+        summaries = LinSubController._build_project_summaries(
+            [older_project, newer_project]
+        )
+
+        self.assertEqual(
+            [project["project_name"] for project in summaries],
+            ["Newer", "Older"],
+        )
+
+    def test_same_name_single_and_batch_projects_have_distinct_storage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                single = project_store.ensure_project("Campaign", str(root / "projects"), "single")
+                batch = project_store.ensure_project("Campaign", str(root / "projects"), "batch")
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertNotEqual(single["key"], batch["key"])
+        self.assertNotEqual(single["project_root"], batch["project_root"])
+        self.assertTrue(single["key"].startswith("project:"))
+        self.assertTrue(batch["key"].startswith("project:"))
+
+    def test_new_projects_with_the_same_name_have_distinct_uuid_identities(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                first = project_store.create_project("Daily clips", str(root / "projects"), "single")
+                second = project_store.create_project("Daily clips", str(root / "projects"), "single")
+                persisted = project_store.list_projects()
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertNotEqual(first["project_id"], second["project_id"])
+        self.assertNotEqual(first["key"], second["key"])
+        self.assertNotEqual(first["project_root"], second["project_root"])
+        self.assertEqual({item["key"] for item in persisted}, {first["key"], second["key"]})
+
+    def test_videos_with_duplicate_project_names_use_the_selected_project_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mp4"
+            source.write_bytes(b"video")
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                first = project_store.create_project("Episode", str(root / "projects"), "single")
+                second = project_store.create_project("Episode", str(root / "projects"), "single")
+                first_video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="single", project_key=first["key"]),
+                    project_name="Episode",
+                    project_directory=str(root / "projects"),
+                    project_key_value=first["key"],
+                )
+                second_video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="single", project_key=second["key"]),
+                    project_name="Episode",
+                    project_directory=str(root / "projects"),
+                    project_key_value=second["key"],
+                )
+                first_workspace = Path(video_store.get_video_dir(first_video.video_id))
+                second_workspace = Path(video_store.get_video_dir(second_video.video_id))
+                video_store._VIDEO_DIR_CACHE.clear()
+                rediscovered = video_store.get_video(first_video.video_id)
+                catalog_ids = {item.video_id for item in video_store.list_videos()}
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_index
+                video_store._VIDEO_DIR_CACHE.clear()
+
+        self.assertEqual(first_video.project_key, first["key"])
+        self.assertEqual(second_video.project_key, second["key"])
+        self.assertTrue(first_workspace.is_relative_to(Path(first["project_root"])))
+        self.assertTrue(second_workspace.is_relative_to(Path(second["project_root"])))
+        self.assertNotEqual(first_workspace.name, first_video.video_id)
+        self.assertNotIn(first_video.video_id, first_workspace.name)
+        self.assertTrue(first_workspace.name.startswith("clip--"))
+        self.assertEqual(rediscovered.video_id, first_video.video_id)
+        self.assertIn(first_video.video_id, catalog_ids)
+
+    def test_batch_videos_share_one_project_card(self):
+        summaries = LinSubController._build_project_summaries(
+            [
+                _video("one", "one.mp4", "Summer launch", "batch", "done", 100, "2026-07-14T10:00:00Z"),
+                _video("two", "two.mp4", "Summer launch", "batch", "processing", 50, "2026-07-14T11:00:00Z"),
+                _video("three", "three.mp4", "Interview", "single", "pending", 0, "2026-07-14T09:00:00Z"),
+            ]
+        )
+
+        self.assertEqual(len(summaries), 2)
+        batch = summaries[0]
+        self.assertEqual(batch["project_name"], "Summer launch")
+        self.assertEqual(batch["project_type"], "batch")
+        self.assertEqual(batch["video_count"], 2)
+        self.assertEqual(batch["status"], "processing")
+        self.assertEqual(batch["progress"], 75)
+        self.assertEqual([video.video_id for video in batch["videos"]], ["one", "two"])
+
+    def test_batch_card_order_is_stable_when_processing_updates_timestamps(self):
+        imported_first = _video("first", "first.mp4", "Campaign", "batch", "done", 100, "2026-07-14T14:00:00Z")
+        imported_first.created_at = "2026-07-14T10:00:00Z"
+        imported_first.batch_import_order = 1000
+        imported_later = _video("later", "later.mp4", "Campaign", "batch", "processing", 50, "2026-07-14T15:00:00Z")
+        imported_later.created_at = "2026-07-14T11:00:00Z"
+        imported_later.batch_import_order = 1001
+
+        summary = LinSubController._build_project_summaries([imported_later, imported_first])[0]
+
+        self.assertEqual([video.video_id for video in summary["videos"]], ["first", "later"])
+
+    def test_project_library_models_keep_single_and_batch_projects_separate(self):
+        summaries = LinSubController._build_project_summaries(
+            [
+                _video("one", "one.mp4", "Campaign", "batch", "pending", 0, "2026-07-14T10:00:00Z"),
+                _video("two", "two.mp4", "Interview", "single", "done", 100, "2026-07-14T11:00:00Z"),
+            ]
+        )
+        single_model = ProjectListModel()
+        batch_model = ProjectListModel()
+        single_model.set_projects([item for item in summaries if item["project_type"] == "single"])
+        batch_model.set_projects([item for item in summaries if item["project_type"] == "batch"])
+
+        self.assertEqual(single_model.rowCount(), 1)
+        self.assertEqual(batch_model.rowCount(), 1)
+        self.assertEqual(single_model.project_at(0)["project_name"], "Interview")
+        self.assertEqual(batch_model.project_at(0)["project_name"], "Campaign")
+
+    def test_project_grid_exposes_only_persisted_project_rows(self):
+        model = ProjectGridModel()
+        project = {
+            "key": "project:one",
+            "project_name": "Campaign",
+            "project_type": "single",
+            "video_count": 1,
+            "status": "pending",
+            "progress": 0,
+            "thumbnail_source": "",
+        }
+        model.set_projects([project])
+        changed_rows = []
+        model.dataChanged.connect(lambda first, last, _roles: changed_rows.append((first.row(), last.row())))
+
+        model.set_projects([{**project, "status": "processing", "progress": 50}])
+
+        self.assertEqual(model.rowCount(), 1)
+        self.assertFalse(model.data(model.index(0, 0), ProjectGridModel.IsCreateCardRole))
+        self.assertEqual(model.data(model.index(0, 0), ProjectGridModel.ProjectKeyRole), "project:one")
+        self.assertIn(b"projectKey", model.roleNames().values())
+        self.assertEqual(len(set(model.roleNames().values())), len(model.roleNames()))
+        self.assertEqual(changed_rows, [(0, 0)])
+
+    def test_batch_output_uses_a_unique_folder_for_each_video(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mp4"
+            source.write_bytes(b"video")
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="batch"),
+                    project_name="Launch",
+                    project_directory=str(root / "projects"),
+                )
+                project_root = Path(project_store.project_root("Launch", str(root / "projects"), "batch"))
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        output_path = Path(video.files["final_video"])
+        self.assertEqual(video.project_type, "batch")
+        self.assertEqual(output_path.name, "render.mp4")
+        self.assertEqual(output_path.parent.name, "temp")
+        self.assertEqual(output_path.parent.parent.parent.parent, project_root)
+        self.assertTrue(project_root.name.startswith("Launch--"))
+        self.assertIn("--", output_path.parent.parent.name)
+
+    def test_batch_storage_cleanup_removes_only_unreferenced_app_folders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mp4"
+            source.write_bytes(b"video")
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.create_project("Batch cleanup", str(root / "projects"), "batch")
+                video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="batch", project_key=project["key"]),
+                    project_name="Batch cleanup",
+                    project_directory=str(root / "projects"),
+                    project_key_value=project["key"],
+                )
+                referenced_export = Path(video.files["final_video"]).parent
+                referenced_export.mkdir(parents=True, exist_ok=True)
+                (referenced_export / "dubbed_video.mp4").write_bytes(b"render")
+                orphan_export = Path(project["project_root"]) / "exports" / "old-1234abcd"
+                orphan_export.mkdir(parents=True)
+                (orphan_export / "dubbed_video.mp4").write_bytes(b"stale")
+                user_folder = Path(project["project_root"]) / "exports" / "notes"
+                user_folder.mkdir(parents=True)
+                invalid_workspace = (
+                    Path(project["project_root"])
+                    / "videos"
+                    / "11111111-1111-4111-8111-111111111111"
+                )
+                invalid_workspace.mkdir(parents=True)
+
+                removed = video_store.cleanup_batch_project_orphans(project["key"])
+                referenced_export_exists = referenced_export.is_dir()
+                user_folder_exists = user_folder.is_dir()
+                orphan_export_exists = orphan_export.exists()
+                invalid_workspace_exists = invalid_workspace.exists()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+                video_store._VIDEO_DIR_CACHE.clear()
+                video_store._VIDEO_METADATA_CACHE.clear()
+
+        self.assertEqual({Path(path).name for path in removed}, {orphan_export.name, invalid_workspace.name})
+        self.assertTrue(referenced_export_exists)
+        self.assertTrue(user_folder_exists)
+        self.assertFalse(orphan_export_exists)
+        self.assertFalse(invalid_workspace_exists)
+
+    def test_deleting_batch_video_also_deletes_its_separate_export_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mp4"
+            source.write_bytes(b"video")
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.create_project("Delete batch video", str(root / "projects"), "batch")
+                video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="batch", project_key=project["key"]),
+                    project_name="Delete batch video",
+                    project_directory=str(root / "projects"),
+                    project_key_value=project["key"],
+                )
+                export_directory = Path(video.files["final_video"]).parent
+                export_directory.mkdir(parents=True, exist_ok=True)
+                (export_directory / "dubbed_video.mp4").write_bytes(b"render")
+                workspace = Path(video_store.get_video_dir(video.video_id))
+
+                deleted = video_store.delete_video(video.video_id, attempts=1, delay_seconds=0)
+                export_exists = export_directory.exists()
+                workspace_exists = workspace.exists()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+                video_store._VIDEO_DIR_CACHE.clear()
+                video_store._VIDEO_METADATA_CACHE.clear()
+
+        self.assertTrue(deleted)
+        self.assertFalse(export_exists)
+        self.assertFalse(workspace_exists)
+
+    def test_single_project_export_is_separate_from_the_project_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mp4"
+            source.write_bytes(b"video")
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="single"),
+                    project_name="Interview",
+                    project_directory=str(root / "projects"),
+                )
+                workspace = Path(video_store.get_video_dir(video.video_id))
+                project_root = Path(project_store.project_root("Interview", str(root / "projects"), "single"))
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        output_path = Path(video.files["final_video"])
+        self.assertEqual(output_path.parent, workspace / "temp")
+        self.assertEqual(output_path.name, "render.mp4")
+        self.assertTrue(project_root.name.startswith("Interview--"))
+        self.assertEqual(workspace.parent.name, "videos")
+        self.assertEqual(workspace.parent.parent, project_root)
+        self.assertFalse((workspace / "output").exists())
+
+    def test_imported_single_video_is_saved_before_processing_starts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "clip.mp4"
+            source.write_bytes(b"video")
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="single"),
+                    project_name="Imported",
+                    project_directory=str(root / "projects"),
+                )
+                persisted = video_store.get_video(video.video_id)
+                copied_input = Path(persisted.files["video_input"])
+                project_root = project_store.project_root("Imported", str(root / "projects"))
+                copied_bytes = copied_input.read_bytes()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+                video_store._VIDEO_DIR_CACHE.clear()
+
+        self.assertEqual(persisted.status, "pending")
+        self.assertEqual(copied_bytes, b"video")
+        self.assertTrue(copied_input.is_relative_to(Path(project_root)))
+
+    def test_channel_import_can_move_downloaded_video_into_project(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "downloaded.mp4"
+            source.write_bytes(b"downloaded-video")
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                video = create_desktop_video(
+                    str(source),
+                    VideoConfig(project_type="batch"),
+                    project_name="Channel",
+                    project_directory=str(root / "projects"),
+                    media_source={"type": "channel", "platform": "YouTube", "remote_video_id": "abc"},
+                    move_input=True,
+                )
+                imported_path = Path(video.files["video_input"])
+                imported_bytes = imported_path.read_bytes()
+                source_exists = source.exists()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+                video_store._VIDEO_DIR_CACHE.clear()
+
+        self.assertFalse(source_exists)
+        self.assertEqual(imported_bytes, b"downloaded-video")
+        self.assertEqual(video.media_source.type, "channel")
+        self.assertEqual(video.media_source.remote_video_id, "abc")
+
+    def test_incomplete_legacy_output_is_preserved_without_claiming_render_completion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.ensure_project("Legacy", str(root / "projects"), "single")
+                config = VideoConfig(project_name="Legacy", project_directory=str(root / "projects"))
+                video = video_store.create_video("legacy-video", "clip.mp4", config)
+                legacy_export = Path(project["project_root"]) / "dubbed_video.mp4"
+                legacy_export.write_bytes(b"video")
+                video.files["final_video"] = str(legacy_export)
+                video_store.save_video(video)
+
+                migrated = migrate_legacy_single_export(video)
+                saved_video = video_store.get_video(video.video_id)
+                expected_export = Path(project["project_root"]) / "exports" / "dubbed_video.mp4"
+                legacy_export_exists = legacy_export.exists()
+                expected_export_exists = expected_export.is_file()
+                saved_export_path = Path(saved_video.files["final_video"])
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertFalse(migrated)
+        self.assertTrue(legacy_export_exists)
+        self.assertFalse(expected_export_exists)
+        self.assertEqual(saved_export_path, legacy_export)
+
+    def test_legacy_video_workspace_stays_at_its_persisted_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project_store.ensure_project("Migrated", str(root / "projects"), "single")
+                video = video_store.create_video("legacy-workspace", "clip.mp4", VideoConfig())
+                legacy_workspace = Path(video_store.get_video_dir(video.video_id))
+                video.project_name = "Migrated"
+                video.project_directory = str(root / "projects")
+                video.project_type = "single"
+                video_store.save_video(video)
+
+                migrated = video_store.migrate_legacy_project_data()
+                workspace = Path(video_store.get_video_dir(video.video_id))
+                saved_video = video_store.get_video(video.video_id)
+                legacy_workspace_exists = legacy_workspace.exists()
+                workspace_has_metadata = (workspace / "video.json").is_file()
+                workspace_parent_name = workspace.parent.name
+                saved_input_parent = Path(saved_video.files["video_input"]).parent.parent
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertEqual(migrated, [])
+        self.assertTrue(legacy_workspace_exists)
+        self.assertEqual(workspace_parent_name, "videos")
+        self.assertTrue(workspace_has_metadata)
+        self.assertEqual(saved_input_parent, workspace)
+
+    def test_interrupted_legacy_workspace_copy_keeps_the_original(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.ensure_project(
+                    "Migration rollback",
+                    str(root / "projects"),
+                    "single",
+                )
+                video = video_store.create_video(
+                    "migration-rollback",
+                    "clip.mp4",
+                    VideoConfig(),
+                )
+                legacy_workspace = Path(video_store.get_video_dir(video.video_id))
+                Path(video.files["video_input"]).write_bytes(b"source-video")
+                video.project_name = "Migration rollback"
+                video.project_directory = str(root / "projects")
+                video.project_type = "single"
+                video_store.save_video(video)
+
+                def fail_copy(_source, staging):
+                    Path(staging).mkdir(parents=True)
+                    (Path(staging) / "partial").write_bytes(b"partial")
+                    raise OSError("simulated interrupted migration")
+
+                with mock.patch.object(video_store.shutil, "copytree", side_effect=fail_copy):
+                    self.assertEqual(video_store.migrate_legacy_project_data(), [])
+
+                destination = Path(project["project_root"]) / "videos" / video.video_id
+                source_still_exists = legacy_workspace.is_dir()
+                source_bytes = Path(video.files["video_input"]).read_bytes()
+                destination_exists = destination.exists()
+                staging_paths = list(destination.parent.glob(".*.migrating"))
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertTrue(source_still_exists)
+        self.assertEqual(source_bytes, b"source-video")
+        self.assertFalse(destination_exists)
+        self.assertEqual(staging_paths, [])
+
+    def test_legacy_thumbnail_moves_into_its_video_workspace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project_store.ensure_project("Thumbnail", str(root / "projects"), "single")
+                config = VideoConfig(project_name="Thumbnail", project_directory=str(root / "projects"))
+                video = video_store.create_video("thumbnail-workspace", "clip.mp4", config)
+                legacy_thumbnail = root / "cache" / "thumbnails" / "legacy.jpg"
+                legacy_thumbnail.parent.mkdir(parents=True)
+                legacy_thumbnail.write_bytes(b"thumbnail")
+                video.files["thumbnail"] = str(legacy_thumbnail)
+                video_store.save_video(video)
+
+                migrated = video_store.migrate_legacy_thumbnails(str(legacy_thumbnail.parent))
+                saved_video = video_store.get_video(video.video_id)
+                expected_thumbnail = Path(video_store.get_video_dir(video.video_id)) / "thumbnail.jpg"
+                expected_exists = expected_thumbnail.is_file()
+                legacy_exists = legacy_thumbnail.exists()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertEqual(migrated, ["thumbnail-workspace"])
+        self.assertTrue(expected_exists)
+        self.assertFalse(legacy_exists)
+        self.assertEqual(Path(saved_video.files["thumbnail"]), expected_thumbnail)
+
+    def test_empty_project_is_included_in_project_summaries(self):
+        persisted = {
+            "key": "single:d:/linsubdata/projects:draft",
+            "project_name": "Draft",
+            "project_directory": "D:/LinSubData/projects",
+            "project_type": "single",
+            "updated_at": "2026-07-15T10:00:00Z",
+        }
+        summaries = LinSubController._build_project_summaries([], [persisted])
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["status"], "empty")
+        self.assertEqual(summaries[0]["video_count"], 0)
+
+    def test_ensure_project_persists_an_empty_project(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.ensure_project("Empty batch", str(root / "exports"), "batch")
+                projects = project_store.list_projects()
+                self.assertTrue(Path(project["project_root"]).is_dir())
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertEqual(projects[0]["key"], project["key"])
+        self.assertEqual(projects[0]["project_type"], "batch")
+        self.assertEqual(projects[0]["schema_version"], project_store.PROJECT_SCHEMA_VERSION)
+        self.assertEqual(projects[0]["storage_layout"], "compact-v1")
+        self.assertNotIn(projects[0]["project_id"], Path(projects[0]["project_root"]).name)
+
+    def test_single_and_batch_projects_with_the_same_name_use_distinct_roots(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                single = project_store.ensure_project("Shared name", str(root / "projects"), "single")
+                batch = project_store.ensure_project("Shared name", str(root / "projects"), "batch")
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertNotEqual(single["project_id"], batch["project_id"])
+        self.assertNotEqual(single["project_root"], batch["project_root"])
+        self.assertTrue(Path(single["project_root"]).name.startswith("Shared name--"))
+        self.assertTrue(Path(batch["project_root"]).name.startswith("Shared name--"))
+
+    def test_deleting_one_project_type_keeps_the_same_named_project(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                single = project_store.ensure_project("Shared name", str(root / "projects"), "single")
+                batch = project_store.ensure_project("Shared name", str(root / "projects"), "batch")
+                Path(single["project_root"], "single.txt").write_text("single", encoding="utf-8")
+                Path(batch["project_root"], "batch.txt").write_text("batch", encoding="utf-8")
+                deleted = project_store.delete_project("Shared name", str(root / "projects"), "single")
+                remaining = project_store.list_projects()
+                batch_still_exists = Path(batch["project_root"], "batch.txt").is_file()
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertTrue(deleted)
+        self.assertTrue(batch_still_exists)
+        self.assertEqual([record["key"] for record in remaining], [batch["key"]])
+
+    def test_new_project_rejects_invalid_and_windows_reserved_names(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                for name in ("a:b", "a?b", "CON", "LPT1.txt", "trailing."):
+                    with self.subTest(name=name), self.assertRaises(ValueError):
+                        project_store.ensure_project(name, str(root / "projects"), "single")
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+    def test_legacy_project_keeps_its_existing_root_when_metadata_is_upgraded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            projects_dir = root / "projects"
+            legacy_root = projects_dir / "Legacy"
+            legacy_root.mkdir(parents=True)
+            key = project_store.project_key("Legacy", str(projects_dir), "single")
+            legacy_record = {
+                "key": key,
+                "project_name": "Legacy",
+                "project_directory": str(projects_dir),
+                "project_root": str(legacy_root),
+                "project_type": "single",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+            index_path = root / "runtime" / "projects.json"
+            index_path.parent.mkdir(parents=True)
+            index_path.write_text(json.dumps([legacy_record]), encoding="utf-8")
+            (legacy_root / project_store.PROJECT_MANIFEST_NAME).write_text(
+                json.dumps(legacy_record),
+                encoding="utf-8",
+            )
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(index_path)
+            try:
+                upgraded = project_store.ensure_project("Legacy", str(projects_dir), "single")
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertEqual(Path(upgraded["project_root"]), legacy_root)
+        self.assertEqual(upgraded["storage_layout"], "legacy")
+        self.assertTrue(upgraded["project_id"])
+
+    def test_delete_is_blocked_when_two_records_reference_the_same_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            projects_dir = root / "projects"
+            shared_root = projects_dir / "shared"
+            shared_root.mkdir(parents=True)
+            records = []
+            for project_type in ("single", "batch"):
+                records.append(
+                    {
+                        "key": project_store.project_key("Shared", str(projects_dir), project_type),
+                        "project_name": "Shared",
+                        "project_directory": str(projects_dir),
+                        "project_root": str(shared_root),
+                        "project_type": project_type,
+                    }
+                )
+            index_path = root / "runtime" / "projects.json"
+            index_path.parent.mkdir(parents=True)
+            index_path.write_text(json.dumps(records), encoding="utf-8")
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(index_path)
+            try:
+                with self.assertRaises(RuntimeError):
+                    project_store.validate_project_deletion("Shared", str(projects_dir), "single")
+                with self.assertRaises(RuntimeError):
+                    project_store.delete_project("Shared", str(projects_dir), "single")
+                still_exists = shared_root.is_dir()
+                remaining = project_store.list_projects()
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertTrue(still_exists)
+        self.assertEqual(len(remaining), 2)
+
+    def test_delete_empty_project_removes_only_its_project_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.ensure_project("Disposable", str(root / "exports"), "single")
+                sibling = project_store.ensure_project("Keep", str(root / "exports"), "single")
+                deleted = project_store.delete_project("Disposable", str(root / "exports"), "single")
+                remaining = project_store.list_projects()
+                removed_project_root_exists = Path(project["project_root"]).exists()
+                sibling_project_root_exists = Path(sibling["project_root"]).is_dir()
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertTrue(deleted)
+        self.assertFalse(removed_project_root_exists)
+        self.assertTrue(sibling_project_root_exists)
+        self.assertEqual([item["key"] for item in remaining], [sibling["key"]])
+
+    def test_delete_project_with_missing_root_clears_only_stale_index_entry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                orphan = project_store.ensure_project("Orphan", str(root / "exports"), "single")
+                sibling = project_store.ensure_project("Keep", str(root / "exports"), "single")
+                shutil.rmtree(orphan["project_root"])
+
+                self.assertTrue(project_store.validate_project_deletion_by_key(orphan["key"]))
+                self.assertTrue(project_store.delete_project_by_key(orphan["key"]))
+                self.assertEqual([item["key"] for item in project_store.list_projects()], [sibling["key"]])
+                self.assertTrue(Path(sibling["project_root"]).is_dir())
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+    def test_delete_project_with_existing_root_and_missing_manifest_stays_blocked(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.ensure_project("Unverified", str(root / "exports"), "single")
+                (Path(project["project_root"]) / project_store.PROJECT_MANIFEST_NAME).unlink()
+                with self.assertRaisesRegex(RuntimeError, "manifest is missing"):
+                    project_store.delete_project_by_key(project["key"])
+                self.assertTrue(Path(project["project_root"]).is_dir())
+                self.assertEqual(len(project_store.list_projects()), 1)
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+    def test_delete_project_removes_all_project_owned_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_index = project_store.PROJECT_INDEX_PATH
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.ensure_project("Disposable", str(root / "exports"), "single")
+                exported_video = Path(project["project_root"]) / "dubbed_video.mp4"
+                nested_log = Path(project["project_root"]) / "processing" / "logs.txt"
+                exported_video.write_bytes(b"video")
+                nested_log.parent.mkdir(parents=True)
+                nested_log.write_text("log", encoding="utf-8")
+                exported_video.chmod(stat.S_IREAD)
+
+                deleted = project_store.delete_project("Disposable", str(root / "exports"), "single")
+                project_root_exists = Path(project["project_root"]).exists()
+                records = project_store.list_projects()
+            finally:
+                project_store.PROJECT_INDEX_PATH = original_index
+
+        self.assertTrue(deleted)
+        self.assertFalse(project_root_exists)
+        self.assertEqual(records, [])
+
+    def test_replacing_a_video_clears_its_previous_processing_data(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project = project_store.ensure_project("Replace", str(root / "projects"), "single")
+                config = VideoConfig(project_name="Replace", project_directory=str(root / "projects"))
+                video = video_store.create_video("replace-video", "old.mp4", config)
+                old_input = Path(video.files["video_input"])
+                old_input.write_bytes(b"old-video")
+                old_export = Path(project["project_root"]) / "exports" / "dubbed_video.mp4"
+                old_export.parent.mkdir(exist_ok=True)  # Simulate the legacy layout explicitly.
+                old_export.write_bytes(b"old-export")
+                old_transcript = Path(video.files["transcript_json"])
+                old_voice = Path(video.files["voice_output"])
+                old_thumbnail = Path(video_store.get_video_dir(video.video_id)) / "thumbnail.jpg"
+                old_transcript.write_text('[{"text": "old"}]', encoding="utf-8")
+                old_voice.write_bytes(b"old-voice")
+                old_thumbnail.write_bytes(b"old-thumbnail")
+                video.files["final_video"] = str(old_export)
+                video.files["thumbnail"] = str(old_thumbnail)
+                video.checkpoints = {"translation": "old-checkpoint"}
+                video.active_artifacts = {
+                    "recognition": "old-recognition",
+                    "translation": "old-translation",
+                }
+                video.manual_target_tool = "translation"
+                video.manual_completed_stages = ["translation", "voice"]
+                video.watermark_text = "OLD WATERMARK"
+                video.files["watermark_image"] = str(old_input.parent / "logo.png")
+                video.files["background_music"] = str(old_input.parent / "music.mp3")
+                video.files["tts_narrator_anchors"] = {"old": "old voice"}
+                video.crop.zoom_percent = 140
+                video.manual_tool_generations = {"voice": 3}
+                video.processing_configuration = {"watermark_text": "OLD WATERMARK"}
+                video.export_history = [{"path": str(old_export)}]
+                video.status = "paused"
+                video.progress = 100
+                video.review_approved = True
+                video_store.save_video(video)
+                Path(video_store.get_video_logs_path(video.video_id)).write_text("old log", encoding="utf-8")
+
+                replacement = root / "new.mov"
+                replacement.write_bytes(b"new-video")
+                updated = video_store.replace_video_input(video.video_id, str(replacement))
+                logs = Path(video_store.get_video_logs_path(video.video_id)).read_text(encoding="utf-8")
+                backup_exists = Path(video_store.get_video_json_path(video.video_id) + ".bak").exists()
+                replacement_name = Path(updated.files["video_input"]).name
+                replacement_bytes = Path(updated.files["video_input"]).read_bytes()
+                old_input_exists = old_input.exists()
+                old_export_exists = old_export.exists()
+                old_transcript_exists = old_transcript.exists()
+                old_voice_exists = old_voice.exists()
+                old_thumbnail_exists = old_thumbnail.exists()
+                legacy_output_exists = (Path(video_store.get_video_dir(video.video_id)) / "output").exists()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertEqual(updated.original_filename, "new.mov")
+        self.assertEqual(replacement_name, "video.mov")
+        self.assertEqual(replacement_bytes, b"new-video")
+        self.assertFalse(old_input_exists)
+        self.assertTrue(old_export_exists)  # Legacy MP4 outside this video's workspace is preserved.
+        self.assertFalse(old_transcript_exists)
+        self.assertFalse(old_voice_exists)
+        self.assertFalse(old_thumbnail_exists)
+        self.assertFalse(legacy_output_exists)
+        self.assertEqual(updated.status, "pending")
+        self.assertEqual(updated.progress, 0)
+        self.assertEqual(updated.checkpoints, {})
+        self.assertEqual(updated.active_artifacts, {})
+        self.assertEqual(updated.manual_target_tool, "")
+        self.assertEqual(updated.manual_completed_stages, [])
+        self.assertEqual(updated.watermark_text, "")
+        self.assertEqual(updated.crop.zoom_percent, 100)
+        self.assertEqual(updated.manual_tool_generations, {"source": 1})
+        self.assertEqual(updated.processing_configuration, {})
+        self.assertEqual(updated.export_history, [])
+        self.assertNotIn("watermark_image", updated.files)
+        self.assertNotIn("background_music", updated.files)
+        self.assertNotIn("tts_narrator_anchors", updated.files)
+        self.assertFalse(updated.review_approved)
+        self.assertFalse(backup_exists)
+        self.assertIn("Previous processing data was removed", logs)
+        self.assertNotIn("old log", logs)
+
+    def test_failed_replacement_keeps_the_previous_source_and_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project_store.ensure_project("Replace rollback", str(root / "projects"), "single")
+                config = VideoConfig(project_name="Replace rollback", project_directory=str(root / "projects"))
+                video = video_store.create_video("replace-rollback", "old.mp4", config)
+                old_input = Path(video.files["video_input"])
+                old_input.write_bytes(b"old-video")
+                old_transcript = Path(video.files["transcript_json"])
+                old_transcript.write_text('[{"text": "old"}]', encoding="utf-8")
+                video.status = "paused"
+                video.checkpoints = {"translation": "old-checkpoint"}
+                video_store.save_video(video)
+                replacement = root / "new.mov"
+                replacement.write_bytes(b"new-video")
+
+                original_copy = video_store.shutil.copy2
+
+                def fail_replacement_copy(source, destination, *args, **kwargs):
+                    if Path(source) == replacement:
+                        Path(destination).write_bytes(b"partial")
+                        raise OSError("simulated copy failure")
+                    return original_copy(source, destination, *args, **kwargs)
+
+                with mock.patch.object(video_store.shutil, "copy2", side_effect=fail_replacement_copy):
+                    with self.assertRaisesRegex(OSError, "simulated copy failure"):
+                        video_store.replace_video_input(video.video_id, str(replacement))
+
+                recovered = video_store.get_video(video.video_id)
+                transaction_paths = list(Path(video_store.get_video_dir(video.video_id)).glob(".replace-input-*"))
+                old_input_bytes = old_input.read_bytes()
+                old_transcript_text = old_transcript.read_text(encoding="utf-8")
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertEqual(old_input_bytes, b"old-video")
+        self.assertEqual(old_transcript_text, '[{"text": "old"}]')
+        self.assertEqual(recovered.original_filename, "old.mp4")
+        self.assertEqual(recovered.status, "paused")
+        self.assertEqual(recovered.checkpoints, {"translation": "old-checkpoint"})
+        self.assertEqual(transaction_paths, [])
+
+    def test_failed_new_import_does_not_publish_a_partial_input(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "videos")
+            source = root / "source.mp4"
+            source.write_bytes(b"source-video")
+
+            def fail_copy(_source, destination):
+                Path(destination).write_bytes(b"partial")
+                raise OSError("simulated import failure")
+
+            try:
+                with mock.patch(
+                    "linsub.services.desktop_videos.shutil.copyfile",
+                    side_effect=fail_copy,
+                ):
+                    with self.assertRaisesRegex(OSError, "simulated import failure"):
+                        create_desktop_video(str(source), VideoConfig())
+                remaining_files = list((root / "videos").rglob("*")) if (root / "videos").exists() else []
+                source_bytes = source.read_bytes()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+
+        self.assertEqual(source_bytes, b"source-video")
+        self.assertEqual(remaining_files, [])
+
+    def test_replacing_a_video_removes_an_untracked_legacy_thumbnail(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project_store.ensure_project("Replace thumbnail", str(root / "projects"), "single")
+                config = VideoConfig(project_name="Replace thumbnail", project_directory=str(root / "projects"))
+                video = video_store.create_video("replace-thumbnail", "old.mp4", config)
+                Path(video.files["video_input"]).write_bytes(b"old-video")
+                legacy_thumbnail = Path(video_store.get_video_dir(video.video_id)) / "thumbnail.jpg"
+                legacy_thumbnail.write_bytes(b"old-thumbnail")
+                replacement = root / "new.mp4"
+                replacement.write_bytes(b"new-video")
+
+                updated = video_store.replace_video_input(video.video_id, str(replacement))
+                legacy_thumbnail_exists = legacy_thumbnail.exists()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertIsNotNone(updated)
+        self.assertFalse(legacy_thumbnail_exists)
+
+    def test_restart_discards_artifacts_and_checkpoints_but_keeps_source_video(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(root / "legacy-videos")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project_store.ensure_project("Restart", str(root / "projects"), "single")
+                config = VideoConfig(project_name="Restart", project_directory=str(root / "projects"))
+                video = video_store.create_video("restart-video", "source.mp4", config)
+                input_path = Path(video.files["video_input"])
+                input_path.write_bytes(b"source-video")
+                transcript_path = Path(video.files["transcript_json"])
+                voice_path = Path(video.files["voice_output"])
+                srt_path = Path(video.files["srt_output"])
+                final_video_path = Path(video.files["final_video"])
+                thumbnail_path = Path(video_store.get_video_dir(video.video_id)) / "thumbnail.jpg"
+                transcript_path.write_text('[{"text": "old"}]', encoding="utf-8")
+                voice_path.write_bytes(b"voice")
+                srt_path.write_text("old subtitles", encoding="utf-8")
+                final_video_path.write_bytes(b"old-export")
+                thumbnail_path.write_bytes(b"thumbnail")
+                video.files["thumbnail"] = str(thumbnail_path)
+                video.checkpoints = {"translation": "checkpoint", "render": "checkpoint"}
+                video.status = "done"
+                video.progress = 100
+                video.resume_step = "rendering"
+                video.review_approved = True
+                video_store.save_video(video)
+
+                restarted = video_store.prepare_video_restart(video.video_id)
+                saved = video_store.get_video(video.video_id)
+                source_bytes = input_path.read_bytes()
+                source_exists = input_path.is_file()
+                thumbnail_exists = thumbnail_path.is_file()
+                transcript_exists = transcript_path.exists()
+                voice_exists = voice_path.exists()
+                srt_exists = srt_path.exists()
+                final_video_exists = final_video_path.exists()
+                voice_parts_exists = (Path(video_store.get_video_dir(video.video_id)) / "temp" / "voice_parts").is_dir()
+            finally:
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertIsNotNone(restarted)
+        self.assertTrue(source_exists)
+        self.assertEqual(source_bytes, b"source-video")
+        self.assertTrue(thumbnail_exists)
+        self.assertFalse(transcript_exists)
+        self.assertFalse(voice_exists)
+        self.assertFalse(srt_exists)
+        self.assertFalse(final_video_exists)
+        self.assertTrue(voice_parts_exists)
+        self.assertEqual(saved.status, "pending")
+        self.assertEqual(saved.progress, 0)
+        self.assertEqual(saved.step, "queued")
+        self.assertEqual(saved.resume_step, "")
+        self.assertEqual(saved.checkpoints, {})
+        self.assertFalse(saved.review_approved)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,279 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+
+QML_DIR = Path(__file__).resolve().parents[1] / "src" / "linsub" / "desktop" / "qml"
+
+
+def test_fresh_import_hides_unresolved_ocr_timeline_without_deleting_layers():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    engine = QQmlEngine()
+    source = (QML_DIR / "ManualWorkspace.qml").read_text(encoding="utf-8")
+    # Evaluate the production bindings with a lightweight model, not copies of
+    # their logic. The same filtered lists are bound to the production timeline.
+    bindings = source.split("    readonly property var unresolvedOcrTrackIds:", 1)[1]
+    bindings = "    readonly property var unresolvedOcrTrackIds:" + bindings.split(
+        "    readonly property string selectedOcrLayerId:", 1,
+    )[0]
+    assert "? root.timelineEditorTracks : root.emptyEditorTracks" in source
+    assert "? root.timelineEditorClips : []" in source
+    component = QQmlComponent(engine)
+    component.setData(('''import QtQuick
+Item { id: root
+    property var editorModel: ({tracks: [], clips: []})
+    property var ocrLayers: []
+''' + bindings + "\n}").encode(), QUrl())
+    assert component.isReady(), "\n".join(error.toString() for error in component.errors())
+    item = component.create()
+    region = {"x_percent": 10, "y_percent": 70, "width_percent": 80, "height_percent": 12}
+    tracks = [{"track_id": track, "kind": kind} for track, kind in (
+        ("result", "result"), ("source-video", "video"), ("subtitles", "subtitle"),
+        ("ocr-source", "ocr"), ("extra", "ocr"), ("voice", "voice"),
+    )]
+    clips = [{"clip_id": track["track_id"], "track_id": track["track_id"]} for track in tracks]
+    try:
+        item.setProperty("editorModel", {"tracks": tracks, "clips": clips})
+        for primary_region, expected_visible in (({}, False), (region, True), ({}, False)):
+            item.setProperty("ocrLayers", [
+                {"track_id": "ocr-source", "primary": True, "region": primary_region},
+                {"track_id": "extra", "primary": False, "region": {}, "pending": True},
+            ])
+            visible_tracks = item.property("timelineEditorTracks").toVariant()
+            visible_clips = item.property("timelineEditorClips").toVariant()
+            assert any(track["track_id"] == "ocr-source" for track in visible_tracks) is expected_visible
+            assert any(clip["track_id"] == "ocr-source" for clip in visible_clips) is expected_visible
+            assert {track["track_id"] for track in visible_tracks} >= {
+                "result", "source-video", "subtitles", "voice", "extra",
+            }
+            assert item.property("editorModel") == {
+                "tracks": tracks, "clips": clips,
+            }
+        # Existing projects: valid detected/overridden region is visible even
+        # when the treatment is disabled; hiding it must not erase saved timing.
+        item.setProperty("ocrLayers", [{"track_id": "ocr-source", "primary": True,
+                                       "region": region, "enabled": False}])
+        assert len(item.property("timelineEditorTracks").toVariant()) == len(tracks)
+    finally:
+        item.deleteLater()
+        engine.deleteLater()
+        app.processEvents()
+
+
+def test_manual_toolbar_loads_and_exposes_compact_actions():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    engine = QQmlEngine()
+    component = QQmlComponent(engine, QUrl.fromLocalFile(str(QML_DIR / "ManualEditorToolbar.qml")))
+    assert component.isReady(), "\n".join(error.toString() for error in component.errors())
+    toolbar = component.createWithInitialProperties({"width": 1280.0, "hasVideo": True})
+    try:
+        assert toolbar is not None, "\n".join(error.toString() for error in component.errors())
+        assert toolbar.property("comparing") is False
+        assert toolbar.property("hasVideo") is True
+        split = toolbar.findChild(QObject, "manualSplitResultButton")
+        assert split is not None and split.property("visible") is True
+    finally:
+        if toolbar is not None:
+            toolbar.deleteLater()
+        engine.deleteLater()
+        app.processEvents()
+
+
+def test_manual_workspace_components_parse():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    engine = QQmlEngine()
+    try:
+        for name in (
+            "ManualWorkspace.qml",
+            "ManualComparePreview.qml",
+            "ManualStageInspector.qml",
+            "SubtitleTimeline.qml",
+            "CompactTextStyleBar.qml",
+            "ManualSubtitleStyleControls.qml",
+            "ManualWatermarkStyleControls.qml",
+            "TextColorStrip.qml",
+            "ColorPickerPopup.qml",
+            "TrackHeader.qml",
+            "EditorDockGroup.qml",
+            "ManualToolNavigator.qml",
+            "ManualSelectionPanel.qml",
+            "ManualSourceToolPanel.qml",
+            "ManualTranslationToolPanel.qml",
+            "ManualSubtitleToolPanel.qml",
+            "ManualImageToolPanel.qml",
+            "ManualVoiceToolPanel.qml",
+            "ManualAudioToolPanel.qml",
+            "ManualExportToolPanel.qml",
+        ):
+            component = QQmlComponent(engine, QUrl.fromLocalFile(str(QML_DIR / name)))
+            assert component.isReady(), f"{name}: " + "\n".join(
+                error.toString() for error in component.errors()
+            )
+    finally:
+        engine.deleteLater()
+        app.processEvents()
+
+
+def test_export_panel_never_claims_ready_before_preflight_and_subtitle_style_is_compact():
+    inspector = (QML_DIR / "ManualStageInspector.qml").read_text(encoding="utf-8")
+    export = (QML_DIR / "ManualExportToolPanel.qml").read_text(encoding="utf-8")
+    subtitle = (QML_DIR / "ManualSubtitleToolPanel.qml").read_text(encoding="utf-8")
+    assert '"canExport": false' in inspector
+    assert "Component.onCompleted:" in inspector
+    assert "Boolean(root.inspector.exportPreflight.canExport)" in export
+    assert "Cần khoảng %1" not in export
+    assert "Kiểm tra trước khi xuất" not in export
+    assert "InspectorSection {" not in subtitle
+
+
+def test_editor_hides_single_tool_header_and_removed_subtitle_actions():
+    dock = (QML_DIR / "EditorDockGroup.qml").read_text(encoding="utf-8")
+    workspace = (QML_DIR / "ManualWorkspace.qml").read_text(encoding="utf-8")
+    dialog = (QML_DIR / "ManualSubtitleEditorDialog.qml").read_text(encoding="utf-8")
+    editor = (QML_DIR / "SubtitleTextEditor.qml").read_text(encoding="utf-8")
+    image = (QML_DIR / "ManualStageInspector.qml").read_text(encoding="utf-8")
+    slider = (QML_DIR / "AppSlider.qml").read_text(encoding="utf-8")
+    assert "visible: root.panelIds.length > 1" in dock
+    assert 'return side === "left" ? ["tools"] : ["tasks"];' in workspace
+    assert 'activatePanel("tasks", "right");' in workspace
+    assert "Tách tại vạch phát" not in dialog
+    assert "Gộp với đoạn sau" not in dialog
+    assert "Đã lưu" not in editor
+    assert '"translation", "image", "export"' in image
+    assert "implicitWidth: 18" in slider
+    assert "implicitWidth: root.pressed" not in slider
+
+
+def test_manual_layout_has_one_toolbar_and_on_demand_comparison():
+    workspace = (QML_DIR / "ManualWorkspace.qml").read_text(encoding="utf-8")
+    preview = (QML_DIR / "ManualComparePreview.qml").read_text(encoding="utf-8")
+    inspector = (QML_DIR / "ManualStageInspector.qml").read_text(encoding="utf-8")
+    timeline = (QML_DIR / "SubtitleTimeline.qml").read_text(encoding="utf-8")
+
+    assert "ManualEditorToolbar {" in workspace
+    assert "SourceMediaPanel {" not in workspace
+    assert "emptySource: !AppController.hasSelectedVideo" in workspace
+    assert "visible: AppController.hasSelectedVideo" not in workspace
+    assert "visible: root.emptySource" in preview
+    assert "ManualWorkflowBar {" not in workspace
+    assert "EditorCommandBar {" not in workspace
+    assert "comparing: root.comparing" in workspace
+    assert "visible: root.comparing" in preview
+    assert "ManualToolNavigator {" in workspace
+    assert '{label: qsTr("Watermark"), stageIndex: 7}' in workspace
+    assert 'label: qsTr("Che phụ đề")' in workspace
+    assert "EditorDockGroup {" in workspace
+    assert 'if (!manualEditorToolbar.exportEnabled)' in workspace
+    assert 'root.selectedStageIndex = 6;' not in workspace
+    assert 'AppController.requestVideoExport();' in workspace
+    assert 'root.activatePanel("tasks", "right");' in workspace
+    assert '"voice": 4, "source-audio": 5, "music": 5' in workspace
+    assert "ManualAssetPanel {" not in workspace
+    assert "EditorFloatingDock {" not in workspace
+    assert "onPanelMoved:" not in (QML_DIR / "EditorDockGroup.qml").read_text(encoding="utf-8")
+    assert 'objectName: "manualToolSelector"' not in inspector
+    assert "resetWorkspaceLayout()" in workspace
+    assert "CornerScaleHandle {" not in (QML_DIR / "EditorOverlayLayer.qml").read_text(encoding="utf-8")
+    assert "RotationHandle {" not in (QML_DIR / "EditorOverlayLayer.qml").read_text(encoding="utf-8")
+    assert "model: visibleTickModel" in timeline
+    assert "model: visibleSegmentModel" in timeline
+    assert "function toggleTrackCollapsed(trackId)" not in timeline
+    assert 'qsTr("Dòng thời gian")' not in timeline
+    assert 'qsTr("Đoạn đã chọn' not in timeline
+    assert "timelineDuration" in timeline
+    assert "id: timelineResizeGrip" in workspace
+    assert "projectTitle: AppController.projectName" in workspace
+    toolbar = (QML_DIR / "ManualEditorToolbar.qml").read_text(encoding="utf-8")
+    assert 'iconName: "zoomOut"' in toolbar
+    assert 'iconName: "zoomIn"' in toolbar
+    assert "onPreviewZoomInRequested:" in workspace
+    assert "onPreviewZoomOutRequested:" in workspace
+    assert "root.queueWheelZoom(event.x" in timeline
+
+
+def test_voice_and_subtitles_share_one_timeline_lane_without_merging_data():
+    timeline = (QML_DIR / "SubtitleTimeline.qml").read_text(encoding="utf-8")
+    header = (QML_DIR / "TrackHeader.qml").read_text(encoding="utf-8")
+
+    assert 'y: combinedVoice ? 104 + root.resultTrackOffset : root.trackY(index)' in timeline
+    assert 'if (trackId === "voice" || trackId === "result")' in timeline
+    assert 'title: qsTr("Phụ đề · Giọng đọc")' in timeline
+    assert 'onSecondaryMuteToggled: root.trackStateRequested("voice", "muted", !secondaryMuted)' in timeline
+    assert 'root.clipSelected(editorClip.clipId,' in timeline
+    assert 'qsTr("Tắt giọng đọc")' in header
+    assert 'qsTr("Khóa chỉnh sửa")' not in header
+    assert 'qsTr("Solo")' not in header
+    assert 'qsTr("Thu gọn track")' not in header
+
+
+def test_text_style_controls_are_inline_in_both_editor_tools():
+    inspector = (QML_DIR / "ManualStageInspector.qml").read_text(encoding="utf-8")
+    image = (QML_DIR / "ManualWatermarkToolPanel.qml").read_text(encoding="utf-8")
+    subtitle = (QML_DIR / "ManualSubtitleToolPanel.qml").read_text(encoding="utf-8")
+    selection = (QML_DIR / "ManualSelectionPanel.qml").read_text(encoding="utf-8")
+    subtitle_controls = (QML_DIR / "ManualSubtitleStyleControls.qml").read_text(encoding="utf-8")
+    watermark_controls = (QML_DIR / "ManualWatermarkStyleControls.qml").read_text(encoding="utf-8")
+    bar = (QML_DIR / "CompactTextStyleBar.qml").read_text(encoding="utf-8")
+    assert "TextStyleLibraryDialog" not in inspector
+    assert "ManualWatermarkStyleControls {" in image
+    assert "ManualSubtitleStyleControls {" in subtitle
+    assert "ManualWatermarkStyleControls {" in selection
+    assert "ManualSubtitleStyleControls {" not in selection
+    assert '"outline_width": Math.round(root.controller.watermarkOutlinePercent / 50)' in watermark_controls
+    assert 'AppController.applyTextStyle([], patch, "project")' in subtitle_controls
+    assert "Style chung" not in subtitle_controls
+    assert "Đoạn này" not in subtitle_controls
+    assert "compactFontSelector" not in bar
+    assert 'root.changeRequested({ "font_weight": checked ? 700 : 400 })' in bar
+    assert 'root.changeRequested({ "outline_width": value })' in bar
+
+
+def test_manual_layout_preferences_are_bounded_and_survive_partial_updates(tmp_path, monkeypatch):
+    from linsub.services import desktop_settings
+
+    monkeypatch.setattr(desktop_settings, "SETTINGS_PATH", tmp_path / "desktop-settings.json")
+    desktop_settings.save_settings({
+        "manual_editor_inspector_width": 9999,
+        "manual_editor_timeline_height": 50,
+        "manual_editor_compare": True,
+    })
+    desktop_settings.save_settings({"language": "vi"})
+    saved = desktop_settings.load_settings()
+    assert saved["manual_editor_inspector_width"] == 520
+    assert saved["manual_editor_timeline_height"] == 200
+    assert saved["manual_editor_compare"] is True
+
+
+def test_manual_workspace_dock_preferences_are_normalized(tmp_path, monkeypatch):
+    from linsub.services import desktop_settings
+
+    monkeypatch.setattr(desktop_settings, "SETTINGS_PATH", tmp_path / "desktop-settings.json")
+    saved = desktop_settings.save_settings({"manual_editor_workspace": {
+        "placements": {"tools": "float", "assets": "invalid", "tasks": "left"},
+        "leftActive": "assets", "rightActive": "tasks",
+        "leftWidth": 9999, "monitor": "unknown",
+    }})["manual_editor_workspace"]
+    assert saved["placements"] == {
+        "tools": "left", "properties": "right", "tasks": "right",
+    }
+    assert saved["leftActive"] == "tools"
+    assert saved["leftWidth"] == 480
+    assert saved["monitor"] == "result"
+    assert desktop_settings.load_settings()["manual_editor_workspace"] == saved
+    desktop_settings.SETTINGS_PATH.write_text(
+        '{"manual_editor_workspace": {"placements": "broken", "monitor": "invalid"}}',
+        encoding="utf-8",
+    )
+    recovered = desktop_settings.load_settings()["manual_editor_workspace"]
+    assert recovered["placements"]["tools"] == "left"
+    assert recovered["placements"]["tasks"] == "right"
+    assert recovered["monitor"] == "result"

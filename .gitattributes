@@ -1,0 +1,24 @@
+* text=auto
+
+*.py text eol=lf
+*.qml text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.ps1 text eol=lf
+requirements-lock*.txt text eol=lf
+licenses/Chromium-BSD-3-Clause.txt text eol=lf
+licenses/Playwright-NOTICE.txt text eol=lf
+licenses/ECAPA-Voice-Profile-MIT.txt text eol=lf
+
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.mp3 binary
+*.wav binary
+*.mp4 binary
+*.mov binary
+*.mkv binary
+*.exe binary
+*.dll binary
+

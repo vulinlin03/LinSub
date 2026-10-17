@@ -1,0 +1,468 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import "."
+
+Item {
+    id: root
+
+    signal openVideoDetail
+    signal requestBatchSettings
+    signal requestUrlImport
+    signal requestDownloadProjectImport
+
+    property bool dropActive: false
+    readonly property bool compactHeight: height < 740
+    property var settingOverrides: []
+    property var results: ({})
+    function refreshOverrides() {
+        settingOverrides = AppController.batchSettingOverrides();
+        results = AppController.batchResults();
+    }
+    Component.onCompleted: refreshOverrides()
+    Connections {
+        target: AppController
+        function onBatchChanged() { root.refreshOverrides(); }
+        function onExportStateChanged() { root.results = AppController.batchResults(); }
+    }
+
+    function importDrop(drop) {
+        root.dropActive = false;
+        if (!drop.urls || drop.urls.length === 0)
+            return;
+        const paths = [];
+        for (let index = 0; index < drop.urls.length; ++index)
+            paths.push(String(drop.urls[index]));
+        AppController.importBatchVideos(paths);
+    }
+
+    opacity: visible ? 1 : 0
+    transform: Translate {
+        y: root.visible ? 0 : 8
+        Behavior on y {
+            NumberAnimation {
+                duration: Theme.motionStandard
+                easing.type: Easing.OutCubic
+            }
+        }
+    }
+    Behavior on opacity {
+        NumberAnimation {
+            duration: Theme.motionStandard
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: UiMetrics.pageMargin
+        spacing: root.compactHeight ? Theme.space12 : Theme.space16
+
+        PageHeader {
+            Layout.fillWidth: true
+            title: AppController.projectName || qsTr("Dự án hàng loạt")
+
+            Text {
+                text: qsTr("%1 %2").arg(AppController.batchCount).arg(qsTr("video"))
+                color: Theme.textMuted
+                font.family: Theme.fontFamily
+                font.pixelSize: TypeScale.label
+                textFormat: Text.PlainText
+            }
+
+            ProjectHeaderActions {
+                projectFolderEnabled: AppController.hasOpenProject
+                deleteEnabled: AppController.hasOpenProject
+                onProjectFolderRequested: AppController.openProjectFolder()
+                onDeleteRequested: AppController.deleteCurrentBatch()
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.minimumHeight: 52
+            Layout.preferredHeight: 52
+            Layout.maximumHeight: 52
+            spacing: Theme.space12
+
+            Rectangle {
+                id: importCard
+
+                Layout.preferredWidth: 440
+                Layout.minimumWidth: 260
+                Layout.maximumWidth: 520
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                radius: Theme.radiusSmall
+                color: root.dropActive ? Theme.interactiveMuted : Theme.surfaceElevated
+                border.width: root.dropActive ? 2 : 1
+                border.color: root.dropActive ? Theme.focus : Theme.outline
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.space12
+                    anchors.rightMargin: Theme.space12
+                    spacing: Theme.space8
+
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        text: AppController.mediaImportBusy ? qsTr("Adding %1 / %2…").arg(AppController.mediaImportCompleted).arg(AppController.mediaImportTotal) : root.dropActive ? qsTr("Thả để thêm video") : qsTr("Thêm vào hàng đợi")
+                        color: Theme.text
+                        font.pixelSize: Theme.caption
+                        font.weight: Font.DemiBold
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                    }
+
+                    MediaSourceImportButton {
+                        Layout.preferredWidth: 132
+                        variant: AppController.batchCount === 0 ? "primary" : "secondary"
+                        onFileRequested: AppController.browseBatchVideos()
+                        onLinkRequested: root.requestUrlImport()
+                        onDownloadProjectRequested: root.requestDownloadProjectImport()
+                    }
+                }
+
+                DropArea {
+                    anchors.fill: parent
+                    keys: ["text/uri-list"]
+                    onEntered: function (drag) {
+                        if (drag.hasUrls) {
+                            root.dropActive = true;
+                            drag.accept();
+                        }
+                    }
+                    onExited: root.dropActive = false
+                    onDropped: function (drop) {
+                        root.importDrop(drop);
+                    }
+                }
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            StudioButton {
+                text: qsTr("Cài đặt hàng loạt")
+                iconGlyph: "\uE713"
+                variant: "secondary"
+                enabled: !AppController.isBatchRunning
+                onClicked: root.requestBatchSettings()
+            }
+
+            DeferredActionButton {
+                objectName: "batchProcessButton"
+                visible: !AppController.isBatchRunning
+                readyText: qsTr("Xử lý")
+                iconGlyph: "\uE768"
+                variant: "primary"
+                actionEnabled: AppController.batchCount > 0 && !AppController.videoExportBusy
+                actionContext: ({projectKey: AppController.projectKey})
+                onExecute: context => {
+                    if (context && context.projectKey === AppController.projectKey && !AppController.isBatchRunning)
+                        AppController.requestBatchProcessing();
+                }
+            }
+
+            DeferredActionButton {
+                objectName: "batchResumeButton"
+                visible: !AppController.isBatchRunning && AppController.batchPausedCount > 0
+                readyText: qsTr("Tiếp tục")
+                iconGlyph: "\uE768"
+                variant: "secondary"
+                actionEnabled: !AppController.videoExportBusy
+                actionContext: ({projectKey: AppController.projectKey})
+                onExecute: context => {
+                    if (context && context.projectKey === AppController.projectKey
+                            && !AppController.isBatchRunning && AppController.batchPausedCount > 0)
+                        AppController.resumeBatch();
+                }
+            }
+
+            StudioButton {
+                visible: AppController.isBatchRunning
+                text: AppController.isBatchPausing ? qsTr("Đang tạm dừng") : qsTr("Tạm dừng xử lý")
+                iconGlyph: "\uE71A"
+                variant: "danger"
+                enabled: !AppController.isBatchPausing
+                onClicked: AppController.stopBatch()
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.space12
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Hàng đợi xử lý")
+                color: Theme.text
+                font.pixelSize: Theme.h2
+                font.weight: Font.DemiBold
+                textFormat: Text.PlainText
+            }
+
+
+            Rectangle {
+                visible: AppController.isBatchRunning
+                Layout.preferredWidth: queueStateLabel.implicitWidth + Theme.space20
+                Layout.preferredHeight: 28
+                radius: Theme.radiusSmall
+                color: Theme.warningMuted
+
+                Text {
+                    id: queueStateLabel
+                    anchors.centerIn: parent
+                    text: AppController.isBatchPausing ? qsTr("Đang tạm dừng") : qsTr("Đang xử lý")
+                    color: Theme.warning
+                    font.pixelSize: Theme.label
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
+                }
+            }
+
+            Text {
+                visible: AppController.batchCount > 0
+                text: qsTr("%1 %2").arg(AppController.batchCount).arg(qsTr("mục"))
+                color: Theme.textMuted
+                font.pixelSize: Theme.caption
+                textFormat: Text.PlainText
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: overrideWarning.implicitHeight + Theme.space16
+            visible: root.settingOverrides.length > 0
+            radius: Theme.radiusSmall
+            color: Theme.warningMuted
+            border.color: Theme.warning
+            border.width: 1
+            RowLayout {
+                id: overrideWarning
+                anchors.fill: parent
+                anchors.margins: Theme.space8
+                Text {
+                    Layout.fillWidth: true
+                    text: qsTr("%1 video dùng cài đặt riêng. Hàng loạt vẫn xử lý các video này.").arg(root.settingOverrides.length)
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: TypeScale.label
+                    color: Theme.warning
+                }
+                StudioButton {
+                    text: qsTr("Chi tiết")
+                    variant: "ghost"
+                    onClicked: overrideDetailsLoader.invoke("open", [])
+                }
+            }
+        }
+
+        Rectangle {
+            id: queuePanel
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: queueList.cellHeight + Theme.space12
+            radius: Theme.radius
+            color: Theme.surface
+            border.width: root.dropActive ? 2 : 1
+            border.color: root.dropActive ? Theme.focus : Theme.outline
+
+            DropArea {
+                anchors.fill: parent
+                keys: ["text/uri-list"]
+                onEntered: function (drag) {
+                    if (drag.hasUrls) {
+                        root.dropActive = true;
+                        drag.accept();
+                    }
+                }
+                onExited: root.dropActive = false
+                onDropped: function (drop) { root.importDrop(drop); }
+            }
+
+            GridView {
+                id: queueList
+
+                // Keep batch cards at the same compact scale as project cards.
+                readonly property int columnCount: Math.max(1, Math.floor((width + Theme.space16) / (200 + Theme.space16)))
+                readonly property real cellContentWidth: Math.floor(width / columnCount)
+                readonly property real cardWidth: Math.min(220, Math.max(1, cellContentWidth - Theme.space16))
+                readonly property real cardHeight: Math.round(cardWidth * 0.56 + 64)
+
+                anchors.fill: parent
+                anchors.margins: AppController.batchCount > 0 ? Theme.space12 : 0
+                clip: true
+                model: AppController.batchVideoModel
+                reuseItems: true
+                cellWidth: cellContentWidth
+                cellHeight: cardHeight + Theme.space16
+
+                delegate: BatchVideoCard {
+                    required property string videoId
+                    customSettings: root.settingOverrides.some(item => item.videoId === videoId)
+                    width: queueList.cardWidth
+                    height: queueList.cardHeight
+                    onActivated: {
+                        AppController.selectBatchVideo(index);
+                        root.openVideoDetail();
+                    }
+                }
+
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                }
+            }
+
+            Column {
+                anchors.centerIn: parent
+                width: Math.min(420, parent.width - 40)
+                spacing: Theme.space8
+                visible: AppController.batchCount === 0
+
+                Text {
+                    width: parent.width
+                    text: qsTr("Hàng đợi đang trống")
+                    color: Theme.text
+                    font.pixelSize: Theme.h3
+                    font.weight: Font.DemiBold
+                    horizontalAlignment: Text.AlignHCenter
+                    textFormat: Text.PlainText
+                }
+
+                Text {
+                    width: parent.width
+                    text: qsTr("Nhập nguồn hoặc kéo video vào đây để thêm vào hàng đợi")
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.caption
+                    horizontalAlignment: Text.AlignHCenter
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WordWrap
+                }
+            }
+        }
+
+        Rectangle {
+            id: batchProgressPanel
+            visible: AppController.batchCount > 0
+
+            Layout.fillWidth: true
+            Layout.minimumHeight: 52
+            Layout.preferredHeight: 52
+            Layout.maximumHeight: 52
+            radius: Theme.radiusSmall
+            color: Theme.surfaceElevated
+            border.width: 1
+            border.color: Theme.outline
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.space12
+                anchors.rightMargin: Theme.space12
+                spacing: Theme.space12
+
+                InfoRow {
+                    Layout.preferredWidth: 78
+                    label: qsTr("Video")
+                    value: String(AppController.batchCount)
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 28
+                    color: Theme.divider
+                }
+
+                InfoRow {
+                    Layout.preferredWidth: 112
+                    label: qsTr("Thành công")
+                    value: qsTr("%1 / %2").arg(root.results.succeeded || 0).arg(AppController.batchCount)
+                }
+
+                StudioButton {
+                    text: (root.results.failed || 0) > 0 ? qsTr("%1 lỗi · Chi tiết").arg(root.results.failed) : qsTr("Chi tiết")
+                    variant: "ghost"
+                    onClicked: resultDetailsLoader.invoke("open", [])
+                }
+
+                ColumnLayout {
+                    visible: root.width >= 1180
+                    Layout.preferredWidth: visible ? 150 : 0
+                    spacing: 3
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("Ngôn ngữ đích")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.label
+                        textFormat: Text.PlainText
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: AppController.batchTargetLanguageLabel
+                        color: Theme.text
+                        font.pixelSize: Theme.body
+                        font.weight: Font.DemiBold
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: AppController.isBatchRunning ? qsTr("Đang xử lý hàng đợi") : qsTr("Tiến độ tổng")
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.caption
+                            textFormat: Text.PlainText
+                        }
+
+                        Text {
+                            text: qsTr("%1%").arg(AppController.batchProgress)
+                            color: Theme.text
+                            font.pixelSize: Theme.h3
+                            font.weight: Font.DemiBold
+                            textFormat: Text.PlainText
+                        }
+                    }
+
+                    AppProgressBar {
+                        Layout.fillWidth: true
+                        value: AppController.batchProgress
+                        active: AppController.isBatchRunning
+                    }
+                }
+            }
+        }
+    }
+
+    LazyDialogLoader {
+        id: overrideDetailsLoader
+        sourceComponent: Component {
+            BatchDetailsDialog {
+                overrides: true
+                rows: root.settingOverrides
+                onClosed: overrideDetailsLoader.release()
+            }
+        }
+    }
+    LazyDialogLoader {
+        id: resultDetailsLoader
+        sourceComponent: Component {
+            BatchDetailsDialog {
+                rows: root.results.rows || []
+                onClosed: resultDetailsLoader.release()
+            }
+        }
+    }
+}

@@ -1,0 +1,63 @@
+import QtQuick
+import QtQuick.Controls.Basic
+import "."
+
+ProgressBar {
+    id: root
+
+    property bool active: false
+    property real sweepPhase: 0.5
+    implicitHeight: 6
+    from: 0
+    to: 100
+
+    background: Rectangle {
+        implicitHeight: 6
+        radius: 3
+        color: Theme.surfaceStrong
+    }
+
+    contentItem: Item {
+        id: track
+        implicitHeight: 6
+        clip: true
+
+        Rectangle {
+            visible: !root.indeterminate
+            width: parent.width
+            height: parent.height
+            radius: 3
+            color: root.value >= root.to ? Theme.success : Theme.interactive
+            transform: Scale {
+                origin.x: 0
+                origin.y: 0
+                xScale: root.visualPosition
+                Behavior on xScale {
+                    enabled: Theme.motionEnabled && root.visible && !root.indeterminate
+                    NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+                }
+            }
+        }
+
+        Rectangle {
+            id: busyFill
+            objectName: "busyProgressFill"
+            visible: root.indeterminate
+            width: Math.max(24, parent.width * 0.28)
+            height: parent.height
+            radius: 3
+            color: Theme.interactive
+            x: -width + (track.width + width) * root.sweepPhase
+            NumberAnimation {
+                target: root
+                property: "sweepPhase"
+                running: root.indeterminate && root.visible && Theme.motionEnabled
+                loops: Animation.Infinite
+                from: 0
+                to: 1
+                duration: 1400
+                easing.type: Easing.Linear
+            }
+        }
+    }
+}

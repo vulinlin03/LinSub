@@ -1,0 +1,30 @@
+import QtQuick
+import QtQuick.Controls.Basic
+import "."
+
+Button {
+    id: root
+
+    property url destination
+
+    implicitWidth: linkLabel.implicitWidth
+    implicitHeight: linkLabel.implicitHeight
+    padding: 0
+    focusPolicy: Qt.TabFocus
+    Accessible.name: text
+
+    contentItem: Text {
+        id: linkLabel
+
+        text: root.text
+        color: root.hovered || root.visualFocus ? Theme.interactiveHover : Theme.interactive
+        font.family: Theme.fontFamily
+        font.pixelSize: TypeScale.control
+        font.underline: root.hovered || root.visualFocus
+        textFormat: Text.PlainText
+    }
+
+    background: Item {}
+
+    onClicked: AppController.openExternalUrl(root.destination.toString())
+}

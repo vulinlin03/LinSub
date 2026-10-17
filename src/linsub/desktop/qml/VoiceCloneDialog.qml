@@ -1,0 +1,406 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Layouts
+import QtMultimedia
+import "."
+
+FloatingToolDialog {
+    id: root
+
+    expandedWidth: 600
+    expandedHeight: 470 + (hasSample ? 40 : 0) + (recordingError.length > 0 ? 50 : 0)
+    toolTitle: qsTr("Nhân bản giọng")
+    toolSubtitle: preferredProvider.indexOf("vieneu") === 0
+        ? qsTr("VieNeu · Mẫu 3–8 giây, một người nói, ít nhạc hoặc tiếng ồn") : ""
+
+    property string screen: "record"
+    property var inputDevices: []
+    property string inputDeviceId: ""
+    property real inputLevelDb: -120
+    property bool inputHasSignal: false
+    property string samplePath: ""
+    property string recordingError: ""
+    property int recordingElapsedMs: 0
+    property int sampleDurationMs: 0
+    property var waveformPeaks: []
+    property var livePeaks: []
+    property bool recording: false
+    property bool referenceCommitted: false
+    property string openedVideoId: ""
+    property var controller: AppController
+    property string preferredProvider: controller.ttsProvider
+    signal referenceAccepted(string path)
+    readonly property bool samplePlaying: samplePlayer.playbackState === MediaPlayer.PlayingState
+    readonly property bool samplePaused: samplePlayer.playbackState === MediaPlayer.PausedState
+    readonly property bool hasSample: samplePath.length > 0
+    readonly property int waveformBarCount: 48
+    readonly property int playableDurationMs: samplePlayer.duration > 0 ? samplePlayer.duration : sampleDurationMs
+    readonly property real playbackProgress: playableDurationMs > 0 ? Math.max(0, Math.min(1, samplePlayer.position / playableDurationMs)) : 0
+
+    function localFileUrl(path) {
+        return path.length > 0 ? "file:///" + path.replace(/\\/g, "/") : "";
+    }
+
+    function formatTime(milliseconds) {
+        const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+        return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+    }
+
+    function releaseSamplePlayer() {
+        samplePlayer.stop();
+        samplePlayer.source = "";
+    }
+
+    function loadSample(path) {
+        samplePath = String(path || "");
+        waveformPeaks = [];
+        sampleDurationMs = 0;
+        if (samplePath.length === 0)
+            return;
+        const analysis = controller.voiceCloneReferenceAnalysis(samplePath, waveformBarCount);
+        waveformPeaks = analysis.peaks || [];
+        sampleDurationMs = Math.max(0, Number(analysis.durationMs || 0));
+        samplePlayer.source = localFileUrl(samplePath);
+    }
+
+    function chooseReferenceFile() {
+        releaseSamplePlayer();
+        const selected = controller.chooseVoiceCloneReference();
+        if (openedVideoId !== String(controller.selectedVideoId || ""))
+            return;
+        if (selected.length > 0 && controller.setVoiceCloneReference(selected, "")) {
+            loadSample(controller.voiceCloneReferencePath);
+            referenceCommitted = false;
+            screen = "record";
+            recordingError = "";
+        }
+    }
+
+    function acceptReference() {
+        if (!hasSample || recording || openedVideoId !== String(controller.selectedVideoId || ""))
+            return false;
+        if (!referenceCommitted) {
+            releaseSamplePlayer();
+            if (!controller.applyVoiceCloneReference(openedVideoId, preferredProvider)) {
+                recordingError = qsTr("Không thể áp dụng mẫu giọng. Hãy kiểm tra dự án rồi thử lại.");
+                return false;
+            }
+            referenceCommitted = true;
+            referenceAccepted(samplePath);
+        }
+        return true;
+    }
+
+    function beginRecording() {
+        releaseSamplePlayer();
+        recordingError = "";
+        recordingElapsedMs = 0;
+        livePeaks = [];
+        inputLevelDb = -120;
+        inputHasSignal = false;
+        if (!controller.startVoiceCloneRecording()) {
+            recordingError = String(controller.voiceCloneRecordingState().error || "");
+            return;
+        }
+        recording = true;
+        recordingTimer.start();
+    }
+
+    function finishRecording() {
+        if (!recording)
+            return;
+        recordingTimer.stop();
+        recording = false;
+        if (controller.finishVoiceCloneRecording()) {
+            loadSample(controller.voiceCloneReferencePath);
+            referenceCommitted = false;
+            recordingError = "";
+        } else {
+            recordingError = String(controller.voiceCloneRecordingState().error || qsTr("Không thể lưu mẫu ghi âm. Hãy ghi lại."));
+        }
+    }
+
+    function toggleSamplePlayback() {
+        if (!hasSample)
+            return;
+        if (samplePlaying) {
+            samplePlayer.pause();
+            return;
+        }
+        if (!samplePaused || samplePlayer.source.toString().length === 0)
+            samplePlayer.source = localFileUrl(samplePath);
+        samplePlayer.play();
+    }
+
+    function openForSelectedVideo() {
+        openedVideoId = String(controller.selectedVideoId || "");
+        referenceCommitted = false;
+        recordingTimer.stop();
+        controller.cancelVoiceCloneRecording();
+        releaseSamplePlayer();
+        recording = false;
+        screen = "record";
+        recordingElapsedMs = 0;
+        recordingError = "";
+        loadSample(controller.voiceCloneReferencePath);
+        inputDevices = typeof controller.voiceCloneInputDevices === "function" ? controller.voiceCloneInputDevices() : [];
+        inputDeviceId = "";
+        for (let i = 0; i < inputDevices.length; ++i) {
+            if (inputDevices[i].selected)
+                inputDeviceId = String(inputDevices[i].id);
+        }
+        open();
+    }
+
+    onClosed: {
+        recordingTimer.stop();
+        controller.cancelVoiceCloneRecording();
+        recording = false;
+        releaseSamplePlayer();
+        screen = "record";
+    }
+
+    Connections {
+        target: root.controller
+        function onSelectedVideoChanged() {
+            if (root.opened && root.openedVideoId !== String(root.controller.selectedVideoId || ""))
+                root.close();
+        }
+    }
+
+    MediaPlayer {
+        id: samplePlayer
+        audioOutput: DefaultAudioOutput { volume: 1.0 }
+        onDurationChanged: {
+            if (samplePlayer.duration > 0)
+                root.sampleDurationMs = samplePlayer.duration;
+        }
+    }
+
+    Timer {
+        id: recordingTimer
+        interval: 80
+        repeat: true
+        onTriggered: {
+            const state = root.controller.voiceCloneRecordingState();
+            root.livePeaks = state.peaks || [];
+            root.recordingElapsedMs = Number(state.durationMs || 0);
+            root.inputLevelDb = Number(state.levelDb ?? -120);
+            root.inputHasSignal = Boolean(state.hasSignal);
+            if (!state.active || String(state.error || "").length > 0) {
+                stop();
+                root.recording = false;
+                root.recordingError = String(state.error || qsTr("Ghi âm đã dừng. Hãy thử lại."));
+            }
+        }
+    }
+
+    Item {
+        anchors.fill: parent
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: Theme.space20
+            spacing: Theme.space12
+            visible: root.screen === "record"
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space8
+
+                StudioButton {
+                    text: root.hasSample ? qsTr("Đổi mẫu") : qsTr("Chọn tệp")
+                    iconGlyph: "\uE8B7"
+                    variant: "secondary"
+                    enabled: !root.recording
+                    onClicked: {
+                        root.releaseSamplePlayer();
+                        root.controller.cancelVoiceCloneRecording();
+                        // The sample/review screen remains the return point:
+                        // changing input must not hide Apply for an existing sample.
+                        root.chooseReferenceFile();
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Text {
+                        Layout.fillWidth: true
+                        text: root.hasSample ? qsTr("Mẫu giọng đã chọn") : qsTr("Ghi mẫu giọng")
+                        color: Theme.text
+                        font.pixelSize: TypeScale.control
+                        font.weight: Font.DemiBold
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("Đọc rõ 5–15 giây bằng giọng tự nhiên.")
+                        color: Theme.textMuted
+                        font.pixelSize: TypeScale.metadata
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WordWrap
+                    }
+                }
+            }
+
+            SettingLabel { text: qsTr("Microphone") }
+            StudioComboBox {
+                objectName: "voiceCloneMicrophonePicker"
+                Layout.fillWidth: true
+                visible: root.inputDevices.length > 0
+                enabled: !root.recording
+                model: root.inputDevices
+                textRole: "label"
+                valueRole: "id"
+                currentIndex: {
+                    for (let i = 0; i < root.inputDevices.length; ++i) {
+                        if (root.inputDevices[i].id === root.inputDeviceId)
+                            return i;
+                    }
+                    return 0;
+                }
+                onActivated: {
+                    if (root.controller.selectVoiceCloneInputDevice(String(currentValue)))
+                        root.inputDeviceId = String(currentValue);
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 110
+                radius: Theme.radius
+                color: Theme.surfaceStrong
+                border.width: 1
+                border.color: Theme.outlineStrong
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: Theme.space12
+                    spacing: Theme.space8
+
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 56
+
+                        Row {
+                            id: waveformRow
+                            anchors.centerIn: parent
+                            width: parent.width
+                            height: parent.height
+                            spacing: 3
+
+                            Repeater {
+                                model: root.waveformBarCount
+                                Rectangle {
+                                    required property int index
+                                    readonly property real peak: root.recording
+                                        ? (root.livePeaks.length > index ? Number(root.livePeaks[index]) : 0.04)
+                                        : (root.waveformPeaks.length > index ? Number(root.waveformPeaks[index]) : 0.04)
+                                    width: Math.max(2, (waveformRow.width - waveformRow.spacing * (root.waveformBarCount - 1)) / root.waveformBarCount)
+                                    height: 4 + Math.max(0.04, Math.min(1, peak)) * 48
+                                    radius: width / 2
+                                    color: root.recording || ((index + 1) / root.waveformBarCount <= root.playbackProgress)
+                                        ? Theme.interactive : Theme.textMuted
+                                    opacity: root.recording || root.hasSample ? 1 : 0.45
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: root.hasSample && !root.recording && root.playableDurationMs > 0
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onPressed: function (mouse) {
+                                samplePlayer.setPosition(Math.round(root.playableDurationMs * mouse.x / Math.max(1, width)));
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: root.recording ? (root.inputHasSignal ? qsTr("Đang ghi · %1 dB").arg(Math.round(root.inputLevelDb))
+                                : qsTr("Đang ghi · chưa có tín hiệu")) : (root.hasSample ? qsTr("Nghe lại mẫu") : qsTr("Sẵn sàng ghi"))
+                            color: root.recording ? Theme.interactive : Theme.textMuted
+                            font.pixelSize: TypeScale.metadata
+                            textFormat: Text.PlainText
+                        }
+                        Text {
+                            text: root.formatTime(root.recording ? root.recordingElapsedMs
+                                : root.samplePlaying || root.samplePaused ? samplePlayer.position
+                                : root.hasSample ? root.playableDurationMs : root.recordingElapsedMs)
+                            color: Theme.text
+                            font.pixelSize: TypeScale.metadata
+                            font.weight: Font.DemiBold
+                            textFormat: Text.PlainText
+                        }
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: root.recordingError.length > 0
+                text: root.recordingError
+                color: Theme.danger
+                font.pixelSize: TypeScale.metadata
+                wrapMode: Text.WordWrap
+                textFormat: Text.PlainText
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space8
+
+                StudioButton {
+                    objectName: "voiceClonePlaybackButton"
+                    visible: root.hasSample && !root.recording
+                    text: root.samplePlaying ? qsTr("Tạm dừng") : qsTr("Nghe lại")
+                    iconGlyph: root.samplePlaying ? "\uE769" : "\uE768"
+                    onClicked: root.toggleSamplePlayback()
+                }
+
+                Item { Layout.fillWidth: true }
+
+                StudioButton {
+                    objectName: "voiceCloneRecordButton"
+                    text: root.recording ? qsTr("Dừng ghi") : root.hasSample ? qsTr("Ghi lại") : qsTr("Bắt đầu ghi")
+                    iconGlyph: root.recording ? "\uE71A" : "\uE720"
+                    variant: root.hasSample && !root.recording ? "secondary" : "primary"
+                    onClicked: {
+                        if (root.recording)
+                            root.finishRecording();
+                        else
+                            root.beginRecording();
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Chỉ dùng giọng của bạn hoặc người đã đồng ý.")
+                color: Theme.textMuted
+                font.pixelSize: TypeScale.metadata
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+            }
+
+            StudioButton {
+                Layout.fillWidth: true
+                visible: root.hasSample && !root.recording
+                text: qsTr("Áp dụng giọng nhân bản")
+                objectName: "voiceCloneApplyButton"
+                variant: "primary"
+                onClicked: {
+                    if (root.acceptReference())
+                        root.close();
+                }
+            }
+        }
+    }
+}

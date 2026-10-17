@@ -1,0 +1,314 @@
+import argparse
+import hashlib
+import importlib.metadata
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+GIB = 1024**3
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while chunk := file.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def directory_size(path: Path) -> int:
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def expected_packages() -> dict[str, str]:
+    configuration = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = configuration["project"]
+    source_pins = configuration.get("tool", {}).get("linsub", {}).get("source-dependencies", {})
+    expected = {}
+    for value in project.get("dependencies", []):
+        requirement = Requirement(value)
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        exact_versions = [item.version for item in requirement.specifier if item.operator == "=="]
+        if requirement.url:
+            pin = source_pins.get(canonicalize_name(requirement.name), {})
+            pinned_url = str(pin.get("url", "")) + "#sha256=" + str(pin.get("sha256", ""))
+            if requirement.url != pinned_url or not pin.get("version"):
+                raise RuntimeError(f"Runtime source dependency must match its reviewed pin: {value}")
+            exact_versions = [pin["version"]]
+        if len(exact_versions) != 1:
+            raise RuntimeError(f"Runtime dependency must have one exact version: {value}")
+        expected[requirement.name] = exact_versions[0]
+    return expected
+
+
+def check(condition: bool, message: str, failures: list[str]) -> None:
+    marker = "OK" if condition else "FAIL"
+    print(f"[{marker}] {message}")
+    if not condition:
+        failures.append(message)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate the LinSub source/build runtime.")
+    parser.add_argument("--for-build", action="store_true")
+    parser.add_argument("--environment-root", type=Path, default=ROOT / ".venv")
+    parser.add_argument(
+        "--profile",
+        choices=("core", "full"),
+        default="full",
+        help="Core validates the distributable UI runtime without optional AI engines.",
+    )
+    args = parser.parse_args()
+    failures: list[str] = []
+
+    lock_check = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "verify-dependency-lock.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    check(
+        lock_check.returncode == 0,
+        lock_check.stdout.strip() or lock_check.stderr.strip() or "Hashed dependency lock",
+        failures,
+    )
+
+    check(sys.version_info[:2] == (3, 13), f"Python {sys.version.split()[0]}", failures)
+    expected_venv = args.environment_root.resolve()
+    check(Path(sys.prefix).resolve() == expected_venv, f"Project virtual environment: {expected_venv}", failures)
+
+    for distribution, expected in expected_packages().items():
+        try:
+            actual = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            actual = "missing"
+        check(
+            actual == expected or actual.startswith(expected + "+"),
+            f"{distribution} {actual} (expected {expected})",
+            failures,
+        )
+
+    if str(SRC) not in sys.path:
+        sys.path.insert(0, str(SRC))
+    from linsub.config import HYMT2_CPU_MODEL_REVISION, HYMT2_MODEL_REVISION, WHISPER_MODEL_REVISION
+    from linsub.core.model_integrity import (
+        HYMT2_CPU_REVISION,
+        HYMT2_GPU_REVISION,
+        OMNIVOICE_REVISION,
+        WHISPER_REVISION,
+        WHISPER_TURBO_REVISION,
+    )
+
+    check(
+        HYMT2_MODEL_REVISION == HYMT2_GPU_REVISION and len(HYMT2_GPU_REVISION) == 40,
+        f"Pinned HY-MT2 GPU revision: {HYMT2_GPU_REVISION}",
+        failures,
+    )
+    check(
+        HYMT2_CPU_MODEL_REVISION == HYMT2_CPU_REVISION and len(HYMT2_CPU_REVISION) == 40,
+        f"Pinned HY-MT2 CPU revision: {HYMT2_CPU_REVISION}",
+        failures,
+    )
+    check(
+        WHISPER_MODEL_REVISION == WHISPER_REVISION and len(WHISPER_REVISION) == 40,
+        f"Pinned Whisper revision: {WHISPER_REVISION}",
+        failures,
+    )
+    check(
+        len(WHISPER_TURBO_REVISION) == 40,
+        f"Pinned Whisper large-v3-turbo revision: {WHISPER_TURBO_REVISION}",
+        failures,
+    )
+    check(
+        len(OMNIVOICE_REVISION) == 40,
+        f"Pinned OmniVoice revision: {OMNIVOICE_REVISION}",
+        failures,
+    )
+    try:
+        from PySide6 import QtCore, QtMultimedia, QtQml, QtQuick  # noqa: F401
+
+        check(True, "Qt Core/QML/Quick/Multimedia imports", failures)
+    except Exception as exc:
+        check(False, f"Qt imports: {exc}", failures)
+
+    torch = None
+    if args.profile == "full":
+        try:
+            import torch as imported_torch
+
+            torch = imported_torch
+            torch_build = "CUDA-capable" if torch.version.cuda else "CPU-only"
+            check(bool(torch.version.cuda), f"Unified Torch build: {torch_build}", failures)
+            print(f"[INFO] CUDA available: {torch.cuda.is_available()}")
+            if torch.cuda.is_available():
+                print(f"[INFO] CUDA device: {torch.cuda.get_device_name(0)}")
+                tensor = torch.ones((16, 16), device="cuda", dtype=torch.float16)
+                result = tensor @ tensor
+                torch.cuda.synchronize()
+                check(float(result.sum().item()) > 0, "CUDA allocation and FP16 compute", failures)
+                print(f"[INFO] CUDA compute capability: {torch.cuda.get_device_capability(0)}")
+                print(f"[INFO] CUDA BF16 supported: {torch.cuda.is_bf16_supported()}")
+                del tensor, result
+                torch.cuda.empty_cache()
+        except Exception as exc:
+            check(False, f"Torch import: {exc}", failures)
+
+        try:
+            import torchcodec  # noqa: F401
+
+            print("[OK] Optional TorchCodec native decoder")
+        except Exception:
+            print("[WARN] Optional TorchCodec decoder is unavailable; waveform fallback remains active.")
+
+    from linsub.config import HF_HOME, MODELS_DIR, RUNTIME_DATA_DIR, TMP_DIR, TORCH_HOME
+    from linsub.core.storage_policy import MINIMUM_OPERATIONAL_FREE_BYTES
+    from linsub.core.runtime_probe import probe_runtime
+
+    check(Path(RUNTIME_DATA_DIR).is_absolute(), f"Runtime data: {RUNTIME_DATA_DIR}", failures)
+    check(Path(HF_HOME).is_absolute(), f"Hugging Face cache: {HF_HOME}", failures)
+    check(Path(TORCH_HOME).is_absolute(), f"Torch cache: {TORCH_HOME}", failures)
+    check(Path(MODELS_DIR).is_absolute(), f"Installed models: {MODELS_DIR}", failures)
+    for directory in (RUNTIME_DATA_DIR, MODELS_DIR, HF_HOME, TORCH_HOME, TMP_DIR):
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)
+        probe_path = path / f".runtime-write-{os.getpid()}"
+        try:
+            probe_path.write_text("ok", encoding="utf-8")
+            probe_path.unlink()
+            writable = True
+        except OSError:
+            writable = False
+        check(writable, f"Writable runtime directory: {path}", failures)
+    model_bytes = directory_size(Path(MODELS_DIR)) if args.profile == "full" else 0
+    required_free_bytes = model_bytes + MINIMUM_OPERATIONAL_FREE_BYTES
+    free_bytes = shutil.disk_usage(RUNTIME_DATA_DIR).free
+    check(
+        free_bytes >= required_free_bytes,
+        f"Runtime disk has {free_bytes / GIB:.1f} GB free; requires {required_free_bytes / GIB:.1f} GB "
+        f"({model_bytes / GIB:.1f} GB installed models + "
+        f"{MINIMUM_OPERATIONAL_FREE_BYTES / GIB:.1f} GB operational reserve)",
+        failures,
+    )
+
+    ffmpeg_manifest_path = ROOT / "runtime" / "ffmpeg-manifest.json"
+    try:
+        ffmpeg_manifest = json.loads(ffmpeg_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        ffmpeg_manifest = {}
+        check(False, f"FFmpeg runtime manifest: {exc}", failures)
+    check(ffmpeg_manifest.get("version") == "8.1.2", "Pinned FFmpeg 8.1.2 manifest", failures)
+
+    for executable in ("ffmpeg.exe", "ffprobe.exe"):
+        path = ROOT / "runtime" / "bin" / executable
+        check(path.is_file(), f"Bundled media tool: {path}", failures)
+        if path.is_file():
+            expected_hash = ffmpeg_manifest.get(executable.removesuffix(".exe") + "_sha256")
+            check(bool(expected_hash) and sha256(path) == expected_hash, f"Pinned checksum: {path.name}", failures)
+            media_probe = subprocess.run(
+                [str(path), "-version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+            expected_line = ffmpeg_manifest.get("version_line", "")
+            version_prefix = expected_line.split(" Copyright", 1)[0]
+            version_matches = bool(version_prefix) and media_probe.stdout.startswith(version_prefix.replace("ffmpeg version", executable.removesuffix(".exe") + " version"))
+            check(media_probe.returncode == 0 and version_matches, f"Native media tool starts: {path.name}", failures)
+
+    for entry in ffmpeg_manifest.get("runtime_files", []):
+        file = ROOT / "runtime/bin" / entry["file"]
+        check(Path(entry["file"]).name == entry["file"] and file.is_file() and sha256(file) == entry["sha256"],
+              f"Media runtime dependency: {entry['file']}", failures)
+
+    compliance_directory = ROOT / "runtime" / "compliance" / "ffmpeg"
+    for filename, hash_key in (
+        ("ffmpeg-8.1.2.tar.xz", "source_sha256"),
+        ("ffmpeg-8.1.2.tar.xz.asc", "source_signature_sha256"),
+    ):
+        path = compliance_directory / filename
+        expected_hash = ffmpeg_manifest.get(hash_key)
+        check(
+            path.is_file() and bool(expected_hash) and sha256(path) == expected_hash,
+            f"FFmpeg compliance file: {filename}",
+            failures,
+        )
+
+    if args.profile == "full":
+        cpu_probe = probe_runtime("cpu")
+        check(cpu_probe.ok, f"Isolated CPU model runtime: {cpu_probe.message}", failures)
+        if torch is not None and torch.cuda.is_available():
+            gpu_probe = probe_runtime("gpu")
+            check(gpu_probe.ok, f"Isolated GPU model runtime: {gpu_probe.message}", failures)
+
+    pip_check = subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    check(pip_check.returncode == 0, pip_check.stdout.strip() or pip_check.stderr.strip() or "pip check", failures)
+
+    if args.for_build and args.profile == "full":
+        from linsub.core.model_integrity import (
+            verify_alignment_models,
+            verify_demucs_model,
+            verify_subtitle_ocr_models,
+        )
+
+        try:
+            demucs_directory = verify_demucs_model(Path(MODELS_DIR) / "demucs")
+            check(True, f"Pinned Demucs model: {demucs_directory}", failures)
+        except Exception as exc:
+            check(False, f"Pinned Demucs model: {exc}", failures)
+        try:
+            alignment_directory = verify_alignment_models(Path(MODELS_DIR) / "alignment")
+            check(True, f"Pinned alignment models: {alignment_directory}", failures)
+        except Exception as exc:
+            check(False, f"Pinned alignment models: {exc}", failures)
+        try:
+            ocr_directory = verify_subtitle_ocr_models(Path(MODELS_DIR) / "subtitle-ocr")
+            check(True, f"Pinned original-subtitle OCR models: {ocr_directory}", failures)
+        except Exception as exc:
+            check(False, f"Pinned original-subtitle OCR models: {exc}", failures)
+        from linsub.services.model_bootstrap import models_ready, required_download_bytes
+
+        for device in ("cpu", "gpu"):
+            check(
+                models_ready(Path(MODELS_DIR), device),
+                (f"First-run {device.upper()} model manifest ({required_download_bytes(device) / GIB:.1f} GiB)"),
+                failures,
+            )
+    if args.for_build:
+        check((ROOT / "src" / "linsub" / "desktop" / "qml" / "Main.qml").is_file(), "QML source tree", failures)
+        check(importlib.metadata.version("pyinstaller") == "6.21.0", "PyInstaller 6.21.0", failures)
+
+    if failures:
+        print(f"Runtime verification failed with {len(failures)} issue(s).")
+        return 1
+    print("Runtime verification passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

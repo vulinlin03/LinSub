@@ -1,0 +1,637 @@
+import queue
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+from linsub.desktop.presenters import build_project_summaries
+from linsub.desktop.processing_lifecycle_controller import ProcessingLifecycleController
+from linsub.desktop.qml_controller import LinSubController
+from linsub.pipeline import process_video
+from linsub.pipeline.process_video import _complete_manual_stage
+from linsub.schemas.video import VideoConfig
+
+
+class ManualWorkflowTests(unittest.TestCase):
+    def test_pending_translation_settings_keep_current_editor_layers_published(self):
+        current = VideoConfig(project_type="manual", target_language="vi")
+        values = {
+            name: getattr(current, name)
+            for name in type(current).model_fields
+        }
+        video = SimpleNamespace(
+            video_id="manual-video",
+            manual_completed_stages=[],
+            **values,
+        )
+        requested = current.model_copy(update={"target_language": "en"})
+
+        with (
+            patch("linsub.desktop.qml_controller.video_store.update_video"),
+            patch("linsub.desktop.qml_controller.manual_artifacts.deactivate") as deactivate,
+        ):
+            LinSubController._apply_config_to_video(SimpleNamespace(), video, requested)
+
+        deactivate.assert_called_once_with(
+            video.video_id,
+            {"recognition", "translation"},
+        )
+
+    def test_manual_tool_queue_resets_stale_progress_before_backend_start(self):
+        video = SimpleNamespace(
+            video_id="manual-video",
+            project_type="manual",
+            project_key="manual:project",
+            status="manual_ready",
+            manual_target_tool="voice",
+            progress=100,
+            current_item=8,
+            total_items=8,
+            estimated_remaining_seconds=0,
+        )
+        host = SimpleNamespace(
+            _model_setup_state="ready",
+            _processing_queue=SimpleNamespace(
+                contains=Mock(return_value=False),
+                enqueue=Mock(return_value=True),
+                pending_ids=Mock(return_value=[video.video_id]),
+            ),
+            processingChanged=SimpleNamespace(emit=Mock()),
+            selectedVideoChanged=SimpleNamespace(emit=Mock()),
+            _log_queue=queue.Queue(),
+        )
+        with (
+            patch(
+                "linsub.desktop.processing_lifecycle_controller.video_store.get_video",
+                return_value=video,
+            ),
+            patch("linsub.desktop.processing_lifecycle_controller.video_store.update_video") as update,
+            patch("linsub.desktop.processing_lifecycle_controller.video_store.log_to_video"),
+            patch("linsub.desktop.processing_lifecycle_controller.project_store.touch_project_by_key"),
+        ):
+            started = ProcessingLifecycleController(host).enqueue_video(video.video_id)
+
+        self.assertTrue(started)
+        queued = update.call_args_list[0].kwargs
+        self.assertEqual(queued["progress"], 0)
+        self.assertEqual(queued["current_item"], 0)
+        self.assertEqual(queued["total_items"], 0)
+        self.assertEqual(queued["step_detail"], "Đang chờ xử lý")
+
+    def test_cancel_manual_tool_removes_a_waiting_job(self):
+        video = SimpleNamespace(
+            video_id="manual-video",
+            project_type="manual",
+            manual_target_tool="voice",
+        )
+        queue_state = SimpleNamespace(
+            active_video_id="another-video",
+            discard=Mock(return_value=True),
+        )
+        host = SimpleNamespace(
+            _selected_video=lambda: video,
+            _processing_queue=queue_state,
+            stopVideo=Mock(),
+            _update_queue_positions=Mock(),
+            processingChanged=SimpleNamespace(emit=Mock()),
+            selectedVideoChanged=SimpleNamespace(emit=Mock()),
+            refreshVideos=Mock(),
+        )
+        with (
+            patch("linsub.desktop.qml_controller.video_store.update_video") as update,
+            patch("linsub.desktop.qml_controller.video_store.log_to_video"),
+        ):
+            cancelled = LinSubController.cancelManualTool(host, "voice")
+
+        self.assertTrue(cancelled)
+        queue_state.discard.assert_called_once_with(video.video_id)
+        host.stopVideo.assert_not_called()
+        self.assertEqual(update.call_args.kwargs["status"], "manual_ready")
+        self.assertEqual(update.call_args.kwargs["manual_target_tool"], "")
+        host._update_queue_positions.assert_called_once_with()
+        host.processingChanged.emit.assert_called_once_with()
+
+    def test_internal_render_completion_does_not_claim_external_export_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "final.mp4"
+            output_path.write_bytes(b"exported-video")
+            video = SimpleNamespace(
+                video_id="manual-video",
+                project_type="manual",
+                status="done",
+                step="done",
+            )
+            host = SimpleNamespace(
+                _log_queue=queue.Queue(),
+                _selected_video_id=video.video_id,
+                refreshVideos=Mock(),
+                selectedVideoChanged=SimpleNamespace(emit=Mock()),
+                _refresh_batch_model=Mock(),
+                batchChanged=SimpleNamespace(emit=Mock()),
+                manualExportCompleted=SimpleNamespace(emit=Mock()),
+                _resolve_video_file=Mock(return_value=str(output_path)),
+            )
+            host._log_queue.put(f"__QUEUE_FINISHED__:{video.video_id}")
+
+            with patch(
+                "linsub.desktop.processing_lifecycle_controller.video_store.get_video",
+                return_value=video,
+            ):
+                ProcessingLifecycleController(host).drain_log_queue()
+
+            host.manualExportCompleted.emit.assert_not_called()
+
+    def test_completed_manual_voice_reconciles_document_before_preview_refresh(self):
+        video = SimpleNamespace(
+            video_id="manual-video", project_type="manual",
+            status="manual_ready", step="manual_voice", manual_target_tool="",
+        )
+        document_model = Mock()
+        host = SimpleNamespace(
+            _log_queue=queue.Queue(),
+            _selected_video_id=video.video_id,
+            _manual_editor_document=document_model,
+            refreshVideos=Mock(),
+            selectedVideoChanged=SimpleNamespace(emit=Mock()),
+            _refresh_batch_model=Mock(),
+            batchChanged=SimpleNamespace(emit=Mock()),
+        )
+        host._log_queue.put(f"__QUEUE_FINISHED__:{video.video_id}")
+        with (
+            patch("linsub.desktop.processing_lifecycle_controller.video_store.get_video", return_value=video),
+            patch("linsub.services.editor_documents.ensure", return_value="repaired-document") as ensure,
+        ):
+            ProcessingLifecycleController(host).drain_log_queue()
+        ensure.assert_called_once_with(video)
+        document_model.set_document.assert_called_once_with("repaired-document")
+        host.selectedVideoChanged.emit.assert_called_once()
+
+    def test_completed_translation_reloads_subtitles_before_syncing_voice(self):
+        video = SimpleNamespace(
+            video_id="manual-video", project_type="manual",
+            status="manual_ready", step="manual_translation", manual_target_tool="",
+        )
+        subtitles = SimpleNamespace(
+            load=Mock(), segments=[{"segment_id": "new", "text": "Câu vừa dịch"}], _states={},
+        )
+        host = SimpleNamespace(
+            _log_queue=queue.Queue(), _selected_video_id=video.video_id,
+            _manual_editor_document=Mock(), _manual_subtitles=subtitles,
+            _manual_editing_segment_id="", _refresh_selected_video_snapshot=Mock(),
+            reviewSegments=[{"text": "Câu vừa dịch"}],
+            refreshVideos=Mock(), selectedVideoChanged=SimpleNamespace(emit=Mock()),
+            _refresh_batch_model=Mock(), batchChanged=SimpleNamespace(emit=Mock()),
+        )
+        host._log_queue.put(f"__QUEUE_FINISHED__:{video.video_id}")
+        with (
+            patch("linsub.desktop.processing_lifecycle_controller.video_store.get_video", return_value=video),
+            patch("linsub.services.editor_documents.sync_subtitle_clips", return_value="updated") as sync,
+        ):
+            ProcessingLifecycleController(host).drain_log_queue()
+        host._refresh_selected_video_snapshot.assert_called_once()
+        subtitles.load.assert_called_once_with(video.video_id, host.reviewSegments)
+        sync.assert_called_once_with(video, subtitles.segments)
+        host._manual_editor_document.set_document.assert_called_once_with("updated")
+
+    def test_preflight_uses_current_project_configuration_before_queueing(self):
+        for tool, provider, model in (("voice", "omnivoice-gpu", "q4"),
+                                      ("translation", "omnivoice", "full"),
+                                      ("image", "omnivoice", "q4")):
+            with self.subTest(tool=tool):
+                video = SimpleNamespace(video_id="manual-test", project_type="manual",
+                    tts_provider="omnivoice", translation_model="q4")
+                manager = Mock()
+                manager.required_packs.return_value = ["missing-test-pack"]
+                manager.missing_packs.return_value = ["missing-test-pack"]
+                manager.requirement_summary.return_value = {"downloadBytes": 0, "requiredBytes": 0}
+                host = SimpleNamespace(_selected_video=lambda: video, _project_type="manual",
+                    _settings_processing_device="gpu", _settings_language="vi", appAlertRequested=Mock(),
+                    _build_config=lambda: SimpleNamespace(tts_provider=provider, translation_model=model),
+                    _resource_packs=SimpleNamespace(manager=manager,
+                        _hardware_compatibility=lambda _pack: (True, "")))
+                with patch("linsub.desktop.qml_controller.video_store.update_video") as update:
+                    self.assertFalse(LinSubController.runManualTool(host, tool))
+                self.assertEqual(manager.required_packs.call_args.args[1]["provider"], provider)
+                self.assertEqual(manager.required_packs.call_args.args[1]["translation_model"], model)
+                host.appAlertRequested.emit.assert_called_once()
+                update.assert_not_called()
+
+    def test_retranslation_requires_confirmation_when_voice_is_active(self):
+        video = SimpleNamespace(
+            video_id="manual-video",
+            project_type="manual",
+            status="manual_ready",
+            active_artifacts={"tts_manifest": "voice-current"},
+        )
+        host = SimpleNamespace(
+            _project_type="manual",
+            _settings_language="vi",
+            _selected_video=lambda: video,
+            _processing_queue=SimpleNamespace(contains=lambda _video_id: False),
+            appAlertRequested=Mock(),
+        )
+
+        with (
+            patch(
+                "linsub.pipeline.manual_tools.tool_readiness",
+                return_value={"toolId": "translation", "canRun": True, "blockedReason": ""},
+            ),
+            patch("linsub.desktop.qml_controller.manual_artifacts.peek_active", return_value={"artifact_id": "voice"}),
+            patch("linsub.desktop.qml_controller.QMessageBox.question", return_value=0) as question,
+        ):
+            started = LinSubController.runManualTool(host, "translation")
+
+        self.assertFalse(started)
+        question.assert_called_once_with(
+            None,
+            "Translate again",
+            "Translating again will remove the current voice. You will need to create the voice again.",
+        )
+
+    def test_manual_is_a_first_class_video_project_type(self):
+        config = VideoConfig(project_type="manual")
+
+        self.assertEqual(config.project_type, "manual")
+
+    def test_presenter_does_not_collapse_manual_projects_into_single(self):
+        video = SimpleNamespace(
+            video_id="manual-video",
+            project_key="manual:key",
+            project_name="Manual demo",
+            project_directory="D:/projects",
+            project_type="manual",
+            original_filename="source.mp4",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            status="manual_ready",
+            progress=64,
+            files={},
+            video_width=1080,
+            video_height=1920,
+        )
+
+        summary = build_project_summaries([video])[0]
+
+        self.assertEqual(summary["project_type"], "manual")
+        self.assertEqual(summary["status"], "manual_ready")
+
+    def test_lifecycle_runs_only_the_requested_manual_stage(self):
+        video = SimpleNamespace(
+            video_id="manual-video",
+            status="manual_ready",
+            project_type="manual",
+            manual_target_stage="voice",
+        )
+        host = SimpleNamespace(
+            _deleted_video_ids=set(),
+            _initial_model_warmup_done=threading.Event(),
+            _shutdown_started=False,
+            _runtime_probe_error="",
+            _model_setup_state="ready",
+            _model_runtime_lock=threading.Lock(),
+        )
+        host._initial_model_warmup_done.set()
+        lifecycle = ProcessingLifecycleController(host)
+
+        with (
+            patch("linsub.desktop.processing_lifecycle_controller.video_store.get_video", return_value=video),
+            patch("linsub.desktop.processing_lifecycle_controller.video_store.update_video"),
+            patch("linsub.desktop.processing_lifecycle_controller.video_store.log_to_video"),
+            patch("linsub.pipeline.process_video.process_video_sync") as process,
+        ):
+            lifecycle.execute_pipeline(video.video_id)
+
+        process.assert_called_once_with(video.video_id, stop_after="voice")
+
+    def test_manual_stage_completion_is_idle_and_durable(self):
+        with (
+            patch("linsub.pipeline.process_video.get_video", return_value=None),
+            patch("linsub.pipeline.process_video.update_video") as update,
+            patch("linsub.pipeline.process_video.log_to_video"),
+        ):
+            _complete_manual_stage("manual-video", "subtitles", 64)
+
+        update.assert_called_once_with(
+            "manual-video",
+            status="manual_ready",
+            progress=64,
+            step="manual_subtitles",
+            step_detail="Manual stage ready: subtitles",
+            estimated_remaining_seconds=None,
+            resume_step="",
+            runtime_recovery_step="",
+            manual_target_stage="",
+            manual_completed_stage="subtitles",
+            manual_completed_stages=["translation", "subtitles"],
+        )
+
+    def test_rerunning_an_unchanged_earlier_stage_preserves_later_manual_result(self):
+        video = SimpleNamespace(
+            manual_completed_stage="timeline",
+            manual_completed_stages=["translation", "subtitles", "voice", "timeline"],
+            progress=87,
+        )
+        with (
+            patch("linsub.pipeline.process_video.get_video", return_value=video),
+            patch("linsub.pipeline.process_video.update_video") as update,
+            patch("linsub.pipeline.process_video.log_to_video"),
+        ):
+            _complete_manual_stage("manual-video", "translation", 62)
+
+        changes = update.call_args.kwargs
+        self.assertEqual(changes["manual_completed_stage"], "translation")
+        self.assertEqual(
+            changes["manual_completed_stages"],
+            ["translation", "subtitles", "voice", "timeline"],
+        )
+        self.assertEqual(changes["progress"], 87)
+
+    def test_changing_voice_invalidates_manual_voice_and_later_stages(self):
+        saved = VideoConfig(project_type="manual", tts_voice="omnivoice:male")
+        edited = saved.model_copy(update={"tts_voice": "omnivoice:female"})
+        video = SimpleNamespace(
+            **saved.model_dump(),
+            video_id="manual-video",
+            manual_completed_stage="timeline",
+            manual_completed_stages=["translation", "subtitles", "voice", "timeline"],
+        )
+        video.subtitle_style = saved.subtitle_style
+        video.crop = saved.crop
+        host = SimpleNamespace(_build_config=lambda: edited)
+
+        with patch("linsub.desktop.qml_controller.video_store.update_video") as update:
+            LinSubController._apply_setup_to_video(host, video)
+
+        changes = update.call_args.kwargs
+        self.assertEqual(changes["manual_completed_stage"], "subtitles")
+        self.assertEqual(changes["manual_completed_stages"], ["translation", "subtitles"])
+        self.assertEqual(changes["manual_target_stage"], "")
+
+    def test_changing_visuals_preserves_voice_and_audio_modules(self):
+        saved = VideoConfig(project_type="manual", original_subtitle_removal_mode="patch")
+        edited = saved.model_copy(update={"original_subtitle_removal_mode": "blur"})
+        video = SimpleNamespace(
+            **saved.model_dump(),
+            video_id="manual-video",
+            manual_completed_stage="timeline",
+            manual_completed_stages=["translation", "subtitles", "voice", "timeline"],
+        )
+        video.subtitle_style = saved.subtitle_style
+        video.crop = saved.crop
+        host = SimpleNamespace(_build_config=lambda: edited)
+
+        with patch("linsub.desktop.qml_controller.video_store.update_video") as update:
+            LinSubController._apply_setup_to_video(host, video)
+
+        changes = update.call_args.kwargs
+        self.assertNotIn("manual_completed_stages", changes)
+        self.assertNotIn("manual_completed_stage", changes)
+
+    def test_changing_mix_levels_invalidates_only_timeline_and_render(self):
+        saved = VideoConfig(project_type="manual", tts_volume=100)
+        edited = saved.model_copy(update={"tts_volume": 74})
+        video = SimpleNamespace(
+            **saved.model_dump(),
+            video_id="manual-video",
+            manual_completed_stage="render",
+            manual_completed_stages=["translation", "subtitles", "voice", "timeline", "render"],
+        )
+        video.subtitle_style = saved.subtitle_style
+        video.crop = saved.crop
+        host = SimpleNamespace(_build_config=lambda: edited)
+
+        with patch("linsub.desktop.qml_controller.video_store.update_video") as update:
+            LinSubController._apply_setup_to_video(host, video)
+
+        changes = update.call_args.kwargs
+        self.assertEqual(
+            changes["manual_completed_stages"],
+            ["translation", "subtitles", "voice"],
+        )
+        self.assertEqual(changes["manual_completed_stage"], "voice")
+
+    def test_changing_recognition_audio_source_invalidates_translation(self):
+        saved = VideoConfig(project_type="manual", enable_audio_separation=False)
+        edited = saved.model_copy(update={"enable_audio_separation": True})
+        video = SimpleNamespace(
+            **saved.model_dump(),
+            video_id="manual-video",
+            manual_completed_stage="voice",
+            manual_completed_stages=["translation", "subtitles", "voice"],
+        )
+        video.subtitle_style = saved.subtitle_style
+        video.crop = saved.crop
+        host = SimpleNamespace(_build_config=lambda: edited)
+
+        with patch("linsub.desktop.qml_controller.video_store.update_video") as update:
+            LinSubController._apply_setup_to_video(host, video)
+
+        changes = update.call_args.kwargs
+        self.assertEqual(changes["manual_completed_stages"], [])
+        self.assertEqual(changes["status"], "manual_ready")
+        self.assertEqual(changes["step"], "manual_ready")
+
+    def test_cover_alignment_is_independent_of_project_type(self):
+        manual_video = SimpleNamespace(
+            project_type="manual",
+            subtitle_layout_override=True,
+            remove_original_subtitles=True,
+        )
+        automatic_video = SimpleNamespace(
+            project_type="single",
+            subtitle_layout_override=True,
+            remove_original_subtitles=True,
+        )
+
+        self.assertTrue(process_video._manual_subtitle_layout_for_render(manual_video))
+        self.assertTrue(process_video._manual_subtitle_layout_for_render(automatic_video))
+        automatic_video.subtitle_layout_override = False
+        self.assertFalse(process_video._manual_subtitle_layout_for_render(automatic_video))
+        automatic_video.subtitle_layout_override = True
+        automatic_video.remove_original_subtitles = False
+        self.assertTrue(process_video._manual_subtitle_layout_for_render(automatic_video))
+
+    def test_voice_module_does_not_run_subtitle_formatting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            transcript = root / "temp" / "segments.json"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text('[{"start": 0, "end": 1, "text": "xin chào"}]', encoding="utf-8")
+            source = root / "input.mp4"
+            source.write_bytes(b"video")
+            video = SimpleNamespace(
+                video_id="manual-video",
+                files={
+                    "video_input": str(source),
+                    "final_video": str(root / "final.mp4"),
+                    "srt_output": str(root / "temp" / "subtitles.srt"),
+                    "voice_output": str(root / "temp" / "voice.wav"),
+                    "transcript_json": str(transcript),
+                },
+                subtitle_style=SimpleNamespace(max_chars_per_line=32),
+                tts_voice="vi-VN-HoaiMyNeural",
+                checkpoints={},
+                resume_step="",
+                runtime_recovery_step="",
+            )
+            reporter = SimpleNamespace(update=lambda *_args: None)
+
+            with (
+                patch.object(process_video, "check_cancellation"),
+                patch.object(process_video, "generate_srt") as generate_srt,
+                patch.object(process_video, "_mark_checkpoint"),
+                patch.object(process_video, "generate_voice_parts", side_effect=RuntimeError("voice reached")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "voice reached"):
+                    process_video._finish_after_translation(
+                        video,
+                        reporter,
+                        str(root),
+                        str(root / "temp" / "source.wav"),
+                        stop_after="voice",
+                    )
+
+            generate_srt.assert_not_called()
+
+    def test_manual_downstream_run_reuses_translation_without_resume_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / "segments.json"
+            transcript.write_text("[]", encoding="utf-8")
+            video = SimpleNamespace(
+                project_type="manual",
+                manual_completed_stages=["translation"],
+                resume_step="",
+                checkpoints={"translation": "signature"},
+            )
+
+            self.assertTrue(
+                process_video._checkpoint_valid(
+                    video,
+                    "translation",
+                    "signature",
+                    [str(transcript)],
+                )
+            )
+
+    def test_tts_run_enters_voice_branch_without_loading_translation_again(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "input" / "video.mp4"
+            transcript_path = root / "temp" / "segments.json"
+            input_path.parent.mkdir(parents=True)
+            transcript_path.parent.mkdir(parents=True)
+            input_path.write_bytes(b"video")
+            transcript_path.write_text('[{"start": 0, "end": 1, "text": "xin chào"}]', encoding="utf-8")
+            signature = process_video._signature(
+                process_video._file_state(str(input_path)),
+                process_video.TIMING_SOURCE,
+                "hymt2-semantic-source-context-retry-v21",
+                "vi",
+                True,
+                "small",
+                "hymt2",
+                process_video.HYMT2_MODEL_REVISION,
+            )
+            video = SimpleNamespace(
+                video_id="manual-video",
+                mode="A",
+                translator_provider="hymt2",
+                target_language="vi",
+                enable_audio_separation=True,
+                speech_recognition_model="small",
+                project_type="manual",
+                manual_completed_stages=["translation", "subtitles"],
+                resume_step="",
+                checkpoints={"translation": signature},
+                files={
+                    "video_input": str(input_path),
+                    "transcript_json": str(transcript_path),
+                },
+            )
+            reporter = SimpleNamespace(update=lambda *_args: None)
+
+            with (
+                patch.object(process_video, "start_video"),
+                patch.object(process_video, "clean_video"),
+                patch.object(process_video, "validate_video_integrity"),
+                patch.object(process_video, "get_video", return_value=video),
+                patch.object(process_video, "log_to_video"),
+                patch.object(process_video, "translate_segments") as translate,
+                patch.object(process_video, "_finish_after_translation") as finish,
+            ):
+                process_video.process_video_sync(
+                    video.video_id,
+                    _reporter=reporter,
+                    stop_after="voice",
+                )
+
+            translate.assert_not_called()
+            finish.assert_called_once_with(
+                video,
+                reporter,
+                str(root),
+                str(root / "temp" / "audio.wav"),
+                stop_after="voice",
+            )
+
+    def test_manual_voice_dialog_applies_one_segment_without_changing_global_voice(self):
+        video = SimpleNamespace(
+            video_id="manual-video",
+            project_type="manual",
+            target_language="vi",
+            tts_provider="edge",
+            tts_voice="vi-VN-NamMinhNeural",
+            speaker_mode="single",
+            files={},
+        )
+
+        def update_video(_video_id, **changes):
+            for name, value in changes.items():
+                setattr(video, name, value)
+            return video
+
+        host = SimpleNamespace(
+            _project_type="manual",
+            _selected_video=lambda: video,
+            _processing_queue=SimpleNamespace(contains=lambda _video_id: False),
+            _normalized_tts_provider=lambda _language, provider: provider,
+            _normalized_voice_for_language=lambda _language, voice, _provider: voice,
+            _manual_subtitles=SimpleNamespace(
+                video_id=video.video_id,
+                segments=[{"segment_id": "segment-a", "text": "Xin chào"}]
+            ),
+            voiceCloneReferencePath="",
+            appAlertRequested=SimpleNamespace(emit=Mock()),
+            _manual_voice_configuration_snapshot=LinSubController._manual_voice_configuration_snapshot,
+            _record_manual_voice_configuration_change=Mock(),
+            runManualTool=Mock(return_value=True),
+        )
+
+        with (
+            patch("linsub.desktop.qml_controller.video_store.update_video", side_effect=update_video),
+            patch("linsub.desktop.qml_controller.video_store.log_to_video"),
+        ):
+            result = LinSubController.configureAndRunManualVoice(
+                host,
+                "omnivoice",
+                "omnivoice:female",
+                "segment",
+                "segment-a",
+                "single",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(video.tts_provider, "edge")
+        self.assertEqual(video.tts_voice, "vi-VN-NamMinhNeural")
+        self.assertEqual(
+            video.files["manual_voice_overrides"]["segment-a"],
+            {"provider": "omnivoice", "voice": "omnivoice:female"},
+        )
+        host.runManualTool.assert_called_once_with("voice")
+        host._record_manual_voice_configuration_change.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

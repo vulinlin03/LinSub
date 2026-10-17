@@ -1,0 +1,1465 @@
+import unittest
+import tempfile
+from queue import Empty
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+from PySide6.QtWidgets import QMessageBox
+
+from linsub.services import social_publish as tiktok_publish, zernio
+from linsub.desktop.social_publish_controller import (
+    ZERNIO_CREDENTIAL_TARGET,
+    ZERNIO_API_KEYS_URL,
+    ZERNIO_SIGN_IN_URL,
+    ZERNIO_SIGN_UP_URL,
+    ZERNIO_POSTING_DOCS_URL,
+    SocialPublishController,
+    _create_post_idempotently,
+)
+
+
+class _Signal:
+    def __init__(self):
+        self.emissions = 0
+
+    def emit(self):
+        self.emissions += 1
+
+
+class _Host:
+    def __init__(self):
+        self.socialPublishStateChanged = _Signal()
+        self.zernioAccountsChanged = _Signal()
+        self.zernioPostOptionsChanged = _Signal()
+        self.tiktokPublishChanged = _Signal()
+        self.tiktok_publish_items = _Model()
+        self.tiktok_project_sources = _Model()
+        self.refresh_count = 0
+
+    def refreshVideos(self):
+        self.refresh_count += 1
+
+
+class _Model:
+    def __init__(self):
+        self.items = []
+
+    def set_items(self, items):
+        self.items = list(items)
+
+    def update_item(self, item_id, item):
+        for index, current in enumerate(self.items):
+            if current.get("id") == item_id:
+                self.items[index] = dict(item)
+                return True
+        return False
+
+    def item_at(self, row):
+        return self.items[row] if 0 <= row < len(self.items) else None
+
+    def set_selected(self, row, selected):
+        if not 0 <= row < len(self.items):
+            return False
+        self.items[row]["selected"] = bool(selected)
+        return True
+
+
+class SocialPublishControllerTests(unittest.TestCase):
+    def test_queue_newest_first_without_rewriting_persisted_insertion_order(self):
+        items = [{"id": str(index), "status": "ready"} for index in range(3)]
+        self.controller._state["items"] = items
+        with patch.object(self.controller, "_model_item", side_effect=dict):
+            self.controller._sync_model()
+            self.assertEqual([row["id"] for row in self.host.tiktok_publish_items.items], ["2", "1", "0"])
+            self.assertEqual([row["id"] for row in items], ["0", "1", "2"])
+            # The new row goes above existing/working rows on every reload.
+            items.append({"id": "3", "status": "ready"})
+            self.controller._sync_model()
+            self.assertEqual([row["id"] for row in self.host.tiktok_publish_items.items], ["3", "2", "1", "0"])
+
+    def test_publish_all_oldest_first_with_newest_first_display(self):
+        self.controller._state["items"] = [
+            {"id": "oldest-posted", "status": "published"},
+            {"id": "old", "status": "ready"}, {"id": "new", "status": "ready"},
+            {"id": "newest-posted", "status": "published"},
+        ]
+        with (
+            patch.object(self.controller, "_model_item", side_effect=dict),
+            patch.object(self.controller, "_waiting_to_publish", side_effect=lambda item: item["status"] == "ready"),
+            patch.object(self.controller, "publish_item", return_value=True) as publish,
+        ):
+            self.controller._sync_model()
+            self.assertTrue(self.controller.publish_all())
+            publish.assert_called_once_with(2, continue_queue=True)
+            self.assertEqual(self.host.tiktok_publish_items.item_at(2)["id"], "old")
+            # Automatic continuation still follows age, not the top UI row.
+            self.controller._state["items"][1]["status"] = "published"
+            self.controller._sync_model()
+            publish.reset_mock()
+            self.assertTrue(self.controller.publish_next(continue_queue=True))
+            publish.assert_called_once_with(1, continue_queue=True)
+            self.assertEqual(self.host.tiktok_publish_items.item_at(1)["id"], "new")
+            # A newly added video appears above existing ones but waits its turn.
+            self.controller._state["items"].append({"id": "latest-added", "status": "ready"})
+            self.controller._sync_model()
+            publish.reset_mock()
+            self.assertTrue(self.controller.publish_next(continue_queue=True))
+            publish.assert_called_once_with(2, continue_queue=True)
+            self.assertEqual(self.host.tiktok_publish_items.item_at(2)["id"], "new")
+
+    def test_progress_updates_keep_correct_id_after_queue_reversal(self):
+        self.controller._state["items"] = [
+            {"id": "old", "status": "uploading", "upload_progress": 0},
+            {"id": "new", "status": "ready", "upload_progress": 0},
+        ]
+        updated = {**self.controller._state["items"][0], "upload_progress": 65}
+        with (
+            patch.object(self.controller, "_model_item", side_effect=dict),
+            patch.object(tiktok_publish, "update_item", return_value=updated),
+        ):
+            self.controller._sync_model()
+            self.controller._update_item_state("old", upload_progress=65)
+        self.assertEqual(self.host.tiktok_publish_items.item_at(0)["id"], "new")
+        self.assertEqual(self.host.tiktok_publish_items.item_at(0)["upload_progress"], 0)
+        self.assertEqual(self.host.tiktok_publish_items.item_at(1)["upload_progress"], 65)
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        index_patch = patch("linsub.services.zernio_keys.INDEX_PATH", Path(directory.name) / "keys.json")
+        index_patch.start()
+        self.addCleanup(index_patch.stop)
+        secret_patch = patch("linsub.services.secure_credentials.read_secret", return_value="")
+        secret_patch.start()
+        self.addCleanup(secret_patch.stop)
+        self.host = _Host()
+        self.controller = SocialPublishController(self.host)
+
+    def test_named_key_selection_checks_connection_before_switching(self):
+        candidate = "sk_" + "b" * 64
+        self.controller._api_key_cache = "previous"
+        client = MagicMock()
+        client.list_profiles.return_value = []
+        client.list_accounts.return_value = []
+        with (patch("linsub.desktop.social_publish_controller.zernio_keys.key_value", return_value=candidate),
+              patch("linsub.desktop.social_publish_controller.zernio_keys.select_key") as select,
+              patch("linsub.desktop.social_publish_controller.zernio.ZernioClient", return_value=client)):
+            self.assertTrue(self.controller.select_api_key("named-id"))
+            self.controller._credential_worker_thread.join(timeout=2)
+            self.assertEqual(self.controller._api_key_cache, "previous")
+            select.assert_not_called()
+            self.controller.drain_events()
+            select.assert_called_once_with("named-id")
+            self.assertEqual(self.controller._api_key_cache, candidate)
+        self.assertTrue(self.controller._require_explicit_account_selection)
+        client.create_profile.assert_not_called()
+
+    def test_failed_named_key_verification_does_not_change_saved_default(self):
+        self.controller._api_key_cache = "previous"
+        client = MagicMock()
+        client.list_profiles.side_effect = zernio.ZernioError("private", status=401)
+        with (patch("linsub.desktop.social_publish_controller.zernio_keys.key_value", return_value="candidate"),
+              patch("linsub.desktop.social_publish_controller.zernio_keys.select_key") as select,
+              patch("linsub.desktop.social_publish_controller.zernio.ZernioClient", return_value=client)):
+            self.assertTrue(self.controller.select_api_key("named-id"))
+            self.controller._credential_worker_thread.join(timeout=2)
+            self.controller.drain_events()
+            select.assert_not_called()
+        self.assertEqual(self.controller._api_key_cache, "previous")
+        self.assertEqual(self.controller.credential_result, "invalid")
+
+    def test_key_management_is_disabled_during_publishing(self):
+        self.controller._busy = True
+        with patch("linsub.desktop.social_publish_controller.zernio_keys.remove_key") as delete:
+            self.assertFalse(self.controller.add_api_key("Team", "sk_" + "a" * 64))
+            self.assertFalse(self.controller.select_api_key("named-id"))
+            self.assertFalse(self.controller.remove_api_key("named-id"))
+            delete.assert_not_called()
+
+    def test_connection_check_checks_all_keys_and_preserves_default_and_queue(self):
+        entries = [dict(id="good", label="One", active=True),
+                   dict(id="bad", label="Two", active=False),
+                   dict(id="missing", label="Three", active=False)]
+        self.controller._state["items"] = [dict(id="queued", status="pending")]
+        original = dict(self.controller._state)
+        good = MagicMock()
+        good.list_profiles.return_value = []
+        good.list_accounts.return_value = []
+        bad = MagicMock()
+        bad.list_profiles.side_effect = zernio.ZernioError("private-secret", status=401)
+        values = {"good": "sk_" + "a" * 64, "bad": "sk_" + "b" * 64}
+        with (patch("linsub.desktop.social_publish_controller.zernio_keys.list_keys", return_value=entries),
+              patch("linsub.desktop.social_publish_controller.zernio_keys.active_id", return_value="good"),
+              patch("linsub.desktop.social_publish_controller.zernio_keys.key_value",
+                    side_effect=lambda key_id: values[key_id] if key_id in values else (_ for _ in ()).throw(ValueError("missing"))),
+              patch("linsub.desktop.social_publish_controller.zernio.ZernioClient",
+                    side_effect=lambda key: good if key == values["good"] else bad),
+              patch("linsub.desktop.social_publish_controller.zernio_keys.select_key") as select,
+              patch("linsub.services.secure_credentials.write_secret") as write):
+            self.assertTrue(self.controller.verify_api_key())
+            self.assertFalse(self.controller.verify_api_key())
+            self.controller._credential_worker_thread.join(timeout=2)
+            self.controller.detach_project()
+            self.controller.drain_events()
+            results = {item["id"]: item["check_result"] for item in self.controller.api_keys}
+            self.assertEqual(results, {"good": "verified", "bad": "invalid", "missing": "invalid"})
+            self.assertFalse(self.controller.credential_busy)
+            select.assert_not_called()
+            write.assert_not_called()
+            good.create_profile.assert_not_called()
+            good.create_video_post.assert_not_called()
+            good.list_accounts.assert_called_once_with(platforms=("tiktok", "youtube", "facebook", "instagram"))
+        self.assertEqual(original["items"], [dict(id="queued", status="pending")])
+
+    def test_stale_bulk_key_results_after_shutdown_are_ignored(self):
+        self.controller._credential_generation = 3
+        self.controller._events.put(dict(type="credential-batch-key", generation=3,
+                                        key_id="one", result="verified"))
+        self.controller.shutdown()
+        self.controller.drain_events()
+        self.assertEqual(self.controller._credential_checks, {})
+
+    def test_removing_inactive_key_notifies_the_qml_list(self):
+        self.controller._api_key_cache = "active-secret"
+        self.controller._emit_changed()
+        emissions = self.host.zernioAccountsChanged.emissions
+        with (patch("linsub.desktop.social_publish_controller.zernio_keys.active_id", return_value="active-id"),
+              patch("linsub.desktop.social_publish_controller.zernio_keys.remove_key", return_value=True)):
+            self.assertTrue(self.controller.remove_api_key("inactive-id"))
+        self.assertEqual(self.host.zernioAccountsChanged.emissions, emissions + 1)
+        self.assertEqual(self.controller._api_key_cache, "active-secret")
+
+    def test_refresh_never_redirects_queue_to_another_account_after_key_switch_or_restart(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/test/publish-project"
+        self.controller._state.update(selected_account_id="previous-account", selected_platform="youtube")
+        self.controller._events.put(dict(type="accounts", project_key="publish-project",
+                                         accounts=[{"_id": "other-account", "platform": "youtube"}], profiles=[]))
+        with (patch("linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings") as update,
+              patch.object(self.controller, "_poll_connected_accounts")):
+            self.controller.drain_events()
+            update.assert_not_called()
+        self.assertEqual(self.controller._state["selected_account_id"], "previous-account")
+        self.assertEqual(self.controller.selected_account_index, -1)
+        self.assertFalse(self.controller.account_ready)
+
+    def test_global_credential_validation_is_read_only_and_survives_project_switch(self):
+        candidate = "sk_" + "a" * 64
+        client = MagicMock()
+        client.list_profiles.return_value = []
+        client.list_accounts.return_value = []
+        with (
+            patch("linsub.desktop.social_publish_controller.zernio.ZernioClient", return_value=client),
+            patch("linsub.services.secure_credentials.write_secret") as write,
+            patch("linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings") as update,
+        ):
+            self.assertTrue(self.controller.save_api_key(candidate))
+            self.controller._credential_worker_thread.join(timeout=2)
+            write.assert_not_called()
+            self.controller.detach_project()
+            self.controller.drain_events()
+            write.assert_called_once_with(ZERNIO_CREDENTIAL_TARGET, candidate, username="Zernio API")
+            update.assert_not_called()
+        self.assertTrue(self.controller.api_key_verified)
+        self.assertFalse(self.controller.credential_busy)
+        client.create_profile.assert_not_called()
+
+    def test_failed_replacement_preserves_working_key_and_does_not_echo_secret(self):
+        previous = "sk_" + "b" * 64
+        candidate = "sk_" + "a" * 64
+        self.controller._api_key_cache = previous
+        self.controller._api_key_verified = True
+        client = MagicMock()
+        client.list_profiles.side_effect = zernio.ZernioError(candidate, status=401)
+        with (
+            patch("linsub.desktop.social_publish_controller.zernio.ZernioClient", return_value=client),
+            patch("linsub.services.secure_credentials.write_secret") as write,
+        ):
+            self.assertTrue(self.controller.save_api_key(candidate))
+            self.controller._credential_worker_thread.join(timeout=2)
+            self.controller.drain_events()
+            write.assert_not_called()
+        self.assertEqual(self.controller._api_key_cache, previous)
+        self.assertTrue(self.controller.api_key_verified)
+        self.assertEqual(self.controller.credential_result, "invalid")
+        self.assertNotIn(candidate, self.controller.status)
+
+    def test_credential_save_failure_preserves_previous_key(self):
+        self.controller._api_key_cache = "old"
+        self.controller._api_key_verified = True
+        self.controller._credential_generation = 1
+        self.controller._credential_busy = True
+        self.controller._events.put(dict(type="credential", generation=1, replace=True,
+                                         result="verified", key="new", profiles=[], accounts=[]))
+        with patch("linsub.services.secure_credentials.write_secret",
+                   side_effect=OSError("private details")):
+            self.controller.drain_events()
+        self.assertEqual(self.controller._api_key_cache, "old")
+        self.assertTrue(self.controller.api_key_verified)
+        self.assertEqual(self.controller.credential_result, "storage-error")
+        self.assertNotIn("private details", self.controller.status)
+
+    def test_invalid_format_is_not_sent_to_server_and_restricted_key_is_accepted(self):
+        with patch.object(self.controller, "_start_credential_check", return_value=True) as start:
+            self.assertFalse(self.controller.save_api_key("partial"))
+            start.assert_not_called()
+            self.assertTrue(self.controller.save_api_key("zrk_" + "c" * 64))
+            start.assert_called_once()
+
+    def test_clear_credential_preserves_project_selection_and_queued_posts(self):
+        self.controller._api_key_cache = "old"
+        self.controller._state.update(selected_account_id="account", privacy_level="PUBLIC",
+                                      items=[dict(id="queued", status="ready")])
+        original = dict(self.controller._state)
+        with (
+            patch("linsub.services.secure_credentials.delete_secret"),
+            patch("linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings") as update,
+        ):
+            self.assertTrue(self.controller.clear_api_key())
+            update.assert_not_called()
+        self.assertEqual(self.controller._state, original)
+        self.assertFalse(self.controller.api_key_configured)
+
+    def test_stale_credential_event_after_shutdown_cannot_write_secret(self):
+        self.controller._credential_generation = 1
+        self.controller._events.put(dict(type="credential", generation=1, replace=True,
+                                         result="verified", key="new"))
+        self.controller.shutdown()
+        with patch("linsub.services.secure_credentials.write_secret") as write:
+            self.controller.drain_events()
+            write.assert_not_called()
+
+    def test_regular_account_refresh_does_not_create_remote_profile(self):
+        client = MagicMock()
+        client.list_profiles.return_value = []
+        client.list_accounts.return_value = []
+        with patch("linsub.desktop.social_publish_controller.zernio.ZernioClient", return_value=client):
+            self.controller._account_worker("refresh", "fake", "")
+        client.create_profile.assert_not_called()
+        self.controller.drain_events()
+
+    def test_credential_check_blocks_publish_and_concurrent_key_changes(self):
+        self.controller._credential_busy = True
+        with patch.object(self.controller, "_ensure_publish_project", return_value=True):
+            self.assertFalse(self.controller._ensure_ready_to_publish({}))
+        self.assertFalse(self.controller.clear_api_key())
+        self.assertFalse(self.controller.save_api_key("sk_" + "a" * 64))
+        self.assertFalse(self.controller.refresh_accounts())
+
+    def test_publish_all_excludes_done_and_ambiguous_remote_posts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "post.mp4"
+            video.write_bytes(b"video")
+            self.controller._state["items"] = [
+                {"file_path": str(video), "status": "published", "zernio_post_id": "done"},
+                {"file_path": str(video), "status": "failed", "zernio_post_id": "uncertain"},
+                {"file_path": str(video), "status": "ready"},
+            ]
+            self.assertEqual(self.controller.waiting_count, 1)
+            self.controller._state["items"].pop()
+            self.assertEqual(self.controller.waiting_count, 0)
+
+    def test_direct_publish_refuses_already_published_before_any_upload(self):
+        self.host.tiktok_publish_items.set_items([{"status": "published", "zernio_post_id": "done"}])
+        with patch.object(self.controller, "_ensure_ready_to_publish") as ensure:
+            self.assertFalse(self.controller.publish_item(0))
+        ensure.assert_not_called()
+
+    def test_removing_post_only_removes_local_list_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "post.mp4"
+            thumbnail = Path(directory) / "thumb.png"
+            video.write_bytes(b"video")
+            thumbnail.write_bytes(b"image")
+            item = {
+                "id": "post-1",
+                "file_name": video.name,
+                "file_path": str(video),
+                "thumbnail_path": str(thumbnail),
+                "zernio_post_id": "remote-1",
+                "status": "published",
+            }
+            self.host.tiktok_publish_items.set_items([item])
+            self.controller._state["items"] = [item]
+            self.controller._project_root = directory
+            with (
+                patch.object(self.controller, "_ensure_publish_project", return_value=True),
+                patch.object(self.controller, "_reload"),
+                patch("linsub.desktop.social_publish_controller.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes),
+                patch("linsub.desktop.social_publish_controller.tiktok_publish.remove_item", return_value=item) as remove,
+            ):
+                self.assertTrue(self.controller.remove_item(0))
+            remove.assert_called_once_with(directory, "post-1")
+            self.assertTrue(video.exists())
+            self.assertTrue(thumbnail.exists())
+
+    def test_remove_other_post_during_upload_preserves_queue_consent(self):
+        active = {"id": "active", "file_name": "active.mp4", "status": "uploading"}
+        done = {"id": "done", "file_name": "done.mp4", "status": "published"}
+        self.host.tiktok_publish_items.set_items([active, done])
+        self.controller._state["items"] = [active, done]
+        self.controller._busy = True
+        self.controller._consent_confirmed = True
+        with (patch.object(self.controller, "_ensure_publish_project", return_value=True),
+              patch.object(self.controller, "_reload"),
+              patch("linsub.desktop.social_publish_controller.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes) as question,
+              patch("linsub.desktop.social_publish_controller.tiktok_publish.remove_item",
+                    return_value=done) as remove):
+            self.assertFalse(self.controller.remove_item(0))
+            question.assert_not_called()
+            self.assertTrue(self.controller.remove_item(1))
+            remove.assert_called_once_with(self.controller._project_root, "done")
+        self.assertTrue(self.controller._busy)
+        self.assertTrue(self.controller._consent_confirmed)
+
+    def test_remove_rechecks_identity_after_confirmation_queue_advances(self):
+        item = {"id": "next", "file_name": "next.mp4", "status": "ready"}
+        self.host.tiktok_publish_items.set_items([item])
+        self.controller._state["items"] = [item]
+
+        def confirm(*args):
+            item["status"] = "uploading"
+            return QMessageBox.StandardButton.Yes
+
+        with (patch.object(self.controller, "_ensure_publish_project", return_value=True),
+              patch("linsub.desktop.social_publish_controller.QMessageBox.question", side_effect=confirm),
+              patch("linsub.desktop.social_publish_controller.tiktok_publish.remove_item") as remove):
+            self.assertFalse(self.controller.remove_item(0))
+            remove.assert_not_called()
+
+    def test_open_verified_post_during_upload(self):
+        self.controller._busy = True
+        self.host.tiktok_publish_items.set_items([{
+            "id": "done", "status": "published", "target_platform": "tiktok",
+            "platform_post_url": "https://www.tiktok.com/@creator/video/1234567890123456789",
+            "platform_post_url_verified": True,
+        }])
+        with patch("linsub.desktop.social_publish_controller.open_external_url", return_value=True) as opened:
+            self.assertTrue(self.controller.open_post(0))
+            opened.assert_called_once()
+
+    def test_onboarding_links_open_their_dedicated_zernio_pages(self):
+        with patch(
+            "linsub.desktop.social_publish_controller.open_external_url",
+            return_value=True,
+        ) as opened:
+            self.assertTrue(self.controller.open_zernio_sign_up())
+            self.assertTrue(self.controller.open_zernio_sign_in())
+            self.assertTrue(self.controller.open_zernio_api_keys())
+            self.assertTrue(self.controller.open_zernio_posting_docs())
+
+        self.assertEqual(
+            [call.args[0] for call in opened.call_args_list],
+            [
+                ZERNIO_SIGN_UP_URL,
+                ZERNIO_SIGN_IN_URL,
+                ZERNIO_API_KEYS_URL,
+                ZERNIO_POSTING_DOCS_URL,
+            ],
+        )
+        self.assertEqual(self.host.tiktokPublishChanged.emissions, 4)
+
+    def test_status_change_does_not_invalidate_account_or_option_properties(self):
+        self.controller._emit_changed()
+        account_emissions = self.host.zernioAccountsChanged.emissions
+        option_emissions = self.host.zernioPostOptionsChanged.emissions
+
+        self.controller._status = "Publishing"
+        self.controller._emit_changed()
+
+        self.assertEqual(self.host.socialPublishStateChanged.emissions, 2)
+        self.assertEqual(self.host.zernioAccountsChanged.emissions, account_emissions)
+        self.assertEqual(self.host.zernioPostOptionsChanged.emissions, option_emissions)
+
+    def test_api_key_is_read_from_windows_credential_store_once(self):
+        key = "sk_" + "a" * 64
+        with patch(
+            "linsub.services.secure_credentials.read_secret",
+            return_value=key,
+        ) as read_secret:
+            self.assertEqual(self.controller._api_key(), key)
+            self.assertEqual(self.controller._api_key(), key)
+
+        read_secret.assert_called_once_with(ZERNIO_CREDENTIAL_TARGET)
+
+    def test_account_ready_requires_verified_creator_options_and_posting_capacity(self):
+        self.controller._accounts = [{"id": "account-1", "platform": "tiktok"}]
+        self.controller._state["selected_account_id"] = "account-1"
+        self.controller._creator_info_loaded = True
+        self.controller._privacy_levels = ["PUBLIC_TO_EVERYONE"]
+
+        self.assertTrue(self.controller.account_ready)
+        self.controller._can_post_more = False
+        self.assertFalse(self.controller.account_ready)
+        self.assertFalse(self.controller.can_post_more)
+
+    def test_background_account_refresh_does_not_mark_the_whole_page_busy(self):
+        worker = MagicMock()
+        with (
+            patch.object(self.controller, "_api_key", return_value="sk_" + "a" * 64),
+            patch("linsub.desktop.social_publish_controller.threading.Thread", return_value=worker),
+        ):
+            self.assertTrue(self.controller._start_account_worker("refresh", silent=True))
+
+        self.assertFalse(self.controller.account_syncing)
+        self.assertTrue(self.controller._background_account_refreshing)
+        self.assertFalse(self.controller.busy)
+        worker.start.assert_called_once_with()
+
+    def test_connect_is_not_blocked_by_an_in_flight_background_refresh(self):
+        worker = MagicMock()
+        self.controller._background_account_refreshing = True
+        with (
+            patch.object(self.controller, "_api_key", return_value="sk_" + "a" * 64),
+            patch("linsub.desktop.social_publish_controller.threading.Thread", return_value=worker),
+        ):
+            self.assertTrue(self.controller.connect_platform("youtube"))
+
+        self.assertTrue(self.controller.account_syncing)
+        self.assertEqual(self.controller._account_generation, 1)
+        worker.start.assert_called_once_with()
+
+    def test_creator_options_request_does_not_block_connecting_another_platform(self):
+        worker = MagicMock()
+        self.controller._creator_syncing = True
+        with (
+            patch.object(self.controller, "_api_key", return_value="sk_" + "a" * 64),
+            patch("linsub.desktop.social_publish_controller.threading.Thread", return_value=worker),
+        ):
+            self.assertTrue(self.controller.connect_platform("youtube"))
+
+        self.assertTrue(self.controller.account_syncing)
+        worker.start.assert_called_once_with()
+
+    def test_disconnect_account_runs_in_the_background(self):
+        worker = MagicMock()
+        self.controller._accounts = [{"_id": "account-1", "platform": "youtube"}]
+        with (
+            patch.object(self.controller, "_api_key", return_value="sk_" + "a" * 64),
+            patch("linsub.desktop.social_publish_controller.threading.Thread", return_value=worker) as thread,
+        ):
+            self.assertTrue(self.controller.disconnect_account(0))
+
+        self.assertTrue(self.controller.account_syncing)
+        self.assertFalse(self.controller.busy)
+        self.assertEqual(thread.call_args.kwargs["args"][-1], "account-1")
+        worker.start.assert_called_once_with()
+
+    def test_verified_account_remains_visually_ready_during_background_refresh(self):
+        self.controller._accounts = [{"id": "account-1", "platform": "tiktok"}]
+        self.controller._state["selected_account_id"] = "account-1"
+        self.controller._creator_info_loaded = True
+        self.controller._privacy_levels = ["PUBLIC_TO_EVERYONE"]
+        self.controller._background_account_refreshing = True
+
+        self.assertTrue(self.controller.account_ready)
+
+    def test_published_item_content_cannot_be_edited(self):
+        self.host.tiktok_publish_items.items = [
+            {
+                "id": "post-1",
+                "status": "published",
+                "caption": "Original",
+                "hashtags": "#tag",
+            }
+        ]
+
+        with patch.object(self.controller, "_ensure_publish_project", return_value=True):
+            self.assertFalse(self.controller.update_item(0, "Changed", "#new"))
+
+    def test_posting_capacity_is_neutral_until_creator_info_loads(self):
+        self.assertTrue(self.controller.can_post_more)
+
+    def test_non_tiktok_connection_is_ready_without_tiktok_creator_info(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.host._project_type = "publish"
+        self.controller._accounts = [{"id": "youtube-1", "platform": "youtube", "name": "Channel"}]
+        with patch(
+            "linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings",
+            side_effect=lambda _root, **changes: {**self.controller._state, **changes},
+        ):
+            self.assertTrue(self.controller.select_account(0))
+
+        self.assertEqual(self.controller.selected_platform, "youtube")
+        self.assertEqual(self.controller.privacy_levels, ["public", "unlisted", "private"])
+        self.assertTrue(self.controller.account_ready)
+
+    def test_reselecting_loaded_account_does_not_rewrite_state_or_reload_model(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.host._project_type = "publish"
+        self.controller._accounts = [{"id": "youtube-1", "platform": "youtube"}]
+        self.controller._state.update(
+            {
+                "selected_account_id": "youtube-1",
+                "selected_platform": "youtube",
+            }
+        )
+        self.controller._creator_info_loaded = True
+
+        with (
+            patch(
+                "linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings"
+            ) as update_settings,
+            patch.object(self.controller, "_sync_model") as sync_model,
+        ):
+            self.assertTrue(self.controller.select_account(0))
+
+        update_settings.assert_not_called()
+        sync_model.assert_not_called()
+
+    def test_reselecting_cached_tiktok_account_does_not_wait_for_network(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.host._project_type = "publish"
+        self.controller._accounts = [{"id": "tiktok-1", "platform": "tiktok"}]
+        self.controller._state.update(
+            {
+                "selected_account_id": "youtube-1",
+                "selected_platform": "youtube",
+                "privacy_level": "public",
+            }
+        )
+        self.controller._creator_cache["tiktok-1"] = (
+            0.0,
+            {
+                "levels": ["PUBLIC_TO_EVERYONE"],
+                "interactions": {"comment": True},
+                "can_post_more": True,
+            },
+        )
+
+        with (
+            patch("linsub.desktop.social_publish_controller.time.monotonic", return_value=1.0),
+            patch(
+                "linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings",
+                side_effect=lambda _root, **changes: {**self.controller._state, **changes},
+            ),
+            patch.object(self.controller, "_start_creator_info_worker") as creator_worker,
+        ):
+            self.assertTrue(self.controller.select_account(0))
+
+        creator_worker.assert_not_called()
+        self.assertEqual(self.controller.privacy_levels, ["PUBLIC_TO_EVERYONE"])
+        self.assertTrue(self.controller.account_ready)
+
+    def test_waiting_card_uses_the_current_publishing_platform(self):
+        self.controller._state["selected_platform"] = "youtube"
+        item = {
+            "caption": "Caption",
+            "hashtags": "#tag",
+            "status": "ready",
+            "target_platform": "tiktok",
+            "zernio_post_id": "",
+            "thumbnail_path": "",
+        }
+
+        self.assertEqual(self.controller._model_item(item)["target_platform"], "youtube")
+
+    def test_selected_batch_project_adds_every_rendered_video_once(self):
+        self.controller._project_sources = [
+            {
+                "selected": True,
+                "output_paths": [
+                    {"output_path": "D:/out/one.mp4", "display_name": "Batch — one.mp4", "video_id": "one", "render_signature": "render-one"},
+                    {"output_path": "D:/out/two.mp4", "display_name": "Batch — two.mp4", "video_id": "two", "render_signature": "render-two"},
+                ],
+            }
+        ]
+
+        with (
+            patch.object(self.controller, "add_videos", return_value=True) as add,
+            patch("linsub.desktop.social_publish_controller.video_store.get_video",
+                  side_effect=lambda identifier: MagicMock(video_id=identifier)),
+            patch("linsub.services.manual_artifacts.peek", side_effect=lambda identifier, _kind, _signature:
+                  {"resolved_outputs": {"video": f"D:/out/{identifier}.mp4"}}),
+            patch("linsub.services.manual_artifacts.pin") as pin,
+        ):
+            self.assertTrue(self.controller.add_selected_project_videos())
+            self.assertEqual(pin.call_count, 2)
+
+        add.assert_called_once_with(
+            ["D:/out/one.mp4", "D:/out/two.mp4"],
+            {
+                "D:/out/one.mp4": "Batch — one.mp4",
+                "D:/out/two.mp4": "Batch — two.mp4",
+            },
+        )
+
+    def test_youtube_short_rejects_horizontal_or_long_video(self):
+        self.controller._state["selected_platform"] = "youtube"
+        self.assertIn(
+            "3 minutes",
+            self.controller._platform_video_error(
+                {
+                    "file_path": "clip.mp4",
+                    "duration_seconds": 181,
+                    "video_width": 1080,
+                    "video_height": 1920,
+                }
+            ),
+        )
+        self.assertIn(
+            "vertical",
+            self.controller._platform_video_error(
+                {
+                    "file_path": "clip.mp4",
+                    "duration_seconds": 60,
+                    "video_width": 1920,
+                    "video_height": 1080,
+                }
+            ),
+        )
+
+    def test_meta_reels_reject_webm_and_platform_duration_limits(self):
+        self.controller._state["selected_platform"] = "facebook"
+        self.assertIn("MP4 or MOV", self.controller._platform_video_error({"file_path": "clip.webm"}))
+        self.assertIn(
+            "60 seconds",
+            self.controller._platform_video_error({"file_path": "clip.mp4", "duration_seconds": 61}),
+        )
+        self.controller._state["selected_platform"] = "instagram"
+        self.assertIn(
+            "90 seconds",
+            self.controller._platform_video_error({"file_path": "clip.mov", "duration_seconds": 91}),
+        )
+
+    def test_published_post_without_public_url_remains_in_status_poll(self):
+        item = {
+            "status": "published",
+            "zernio_post_id": "post-1",
+            "platform_post_url": "",
+        }
+        self.controller._state["items"] = [item]
+
+        self.assertEqual(self.controller._pending_post_ids(), ["post-1"])
+
+        item["platform_post_url"] = "https://www.tiktok.com/@creator/video/123"
+        item["platform_post_url_verified"] = True
+        self.assertEqual(self.controller._pending_post_ids(), [])
+
+    def test_published_post_with_guessed_tiktok_url_is_polled_again(self):
+        item = {
+            "status": "published",
+            "zernio_post_id": "post-1",
+            "target_platform": "tiktok",
+            "platform_post_url": "https://zernio.com/posts/post-1",
+        }
+        self.controller._state["items"] = [item]
+
+        self.assertEqual(self.controller._pending_post_ids(), ["post-1"])
+
+    def test_unknown_remote_post_status_cannot_fall_back_to_publishable(self):
+        item = {
+            "status": "accepted",
+            "zernio_post_id": "post-1",
+            "target_platform": "tiktok",
+            "platform_post_url": "",
+        }
+        self.controller._state["items"] = [item]
+
+        self.assertEqual(self.controller._pending_post_ids(), ["post-1"])
+
+    def test_model_hides_invalid_cached_post_url(self):
+        item = {
+            "caption": "Caption",
+            "hashtags": "#tag",
+            "status": "published",
+            "target_platform": "tiktok",
+            "platform_post_url": "https://www.tiktok.com/@creator/video/123",
+            "platform_post_url_verified": True,
+            "thumbnail_path": "",
+        }
+        self.assertEqual(
+            self.controller._model_item(item)["platform_post_url"],
+            "https://www.tiktok.com/@creator/video/123",
+        )
+        item["platform_post_url"] = "https://zernio.com/posts/post-1"
+        self.assertEqual(self.controller._model_item(item)["platform_post_url"], "")
+
+    def test_opening_publish_project_restores_zernio_accounts_automatically(self):
+        with (
+            patch.object(self.controller, "_reload"),
+            patch.object(self.controller, "_api_key", return_value="sk_" + "a" * 64),
+            patch.object(self.controller, "reconcile_accounts", return_value=True) as refresh,
+            patch("linsub.desktop.social_publish_controller.tiktok_publish.migrate_project_layout"),
+            patch("linsub.desktop.social_publish_controller.tiktok_publish.cleanup_orphaned_media"),
+        ):
+            self.controller.attach_project("publish-project", "D:/LinSubData/publish-project")
+
+        refresh.assert_called_once_with()
+
+    def test_switching_publish_projects_clears_transient_creator_state(self):
+        self.controller._project_key = "old-project"
+        self.controller._project_root = "D:/LinSubData/old-project"
+        self.controller._privacy_levels = ["PUBLIC_TO_EVERYONE"]
+        self.controller._interaction_settings = {
+            "comment": True,
+            "duet": True,
+            "stitch": True,
+        }
+        self.controller._creator_info_loaded = True
+
+        with (
+            patch.object(self.controller, "_reload"),
+            patch.object(self.controller, "_api_key", return_value=""),
+            patch("linsub.desktop.social_publish_controller.tiktok_publish.migrate_project_layout"),
+            patch("linsub.desktop.social_publish_controller.tiktok_publish.cleanup_orphaned_media"),
+        ):
+            self.controller.attach_project("new-project", "D:/LinSubData/new-project")
+
+        self.assertEqual(self.controller._privacy_levels, [])
+        self.assertEqual(
+            self.controller._interaction_settings,
+            {"comment": False, "duet": False, "stitch": False},
+        )
+        self.assertFalse(self.controller._creator_info_loaded)
+
+    def test_browse_videos_forwards_native_selection_to_project_import(self):
+        with (
+            patch.object(self.controller, "_ensure_publish_project", return_value=True),
+            patch(
+                "linsub.desktop.social_publish_controller.QFileDialog.getOpenFileNames",
+                return_value=(["D:/media/one.mp4", "D:/media/two.mov"], "Video files"),
+            ),
+            patch.object(self.controller, "add_videos", return_value=True) as add_videos,
+        ):
+            self.assertTrue(self.controller.browse_videos())
+
+        add_videos.assert_called_once_with(["D:/media/one.mp4", "D:/media/two.mov"])
+
+    def test_browse_folder_adds_supported_video_files_recursively(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "nested").mkdir()
+            (root / "one.mp4").write_bytes(b"one")
+            (root / "nested" / "two.webm").write_bytes(b"two")
+            (root / "ignore.txt").write_text("ignore", encoding="utf-8")
+            with (
+                patch.object(self.controller, "_ensure_publish_project", return_value=True),
+                patch(
+                    "linsub.desktop.social_publish_controller.QFileDialog.getExistingDirectory",
+                    return_value=folder,
+                ),
+                patch.object(self.controller, "add_videos", return_value=True) as add_videos,
+            ):
+                self.assertTrue(self.controller.browse_folder())
+
+        selected = add_videos.call_args.args[0]
+        self.assertEqual({Path(path).suffix for path in selected}, {".mp4", ".webm"})
+
+    def test_refresh_syncs_supported_accounts_across_all_zernio_profiles(self):
+        client = MagicMock()
+        client.list_profiles.return_value = [
+            {"_id": "profile-default", "name": "Default", "isDefault": True},
+            {"_id": "profile-web", "name": "Web connections"},
+        ]
+        client.list_accounts.return_value = [
+            {
+                "_id": "account-web",
+                "platform": "tiktok",
+                "username": "@creator",
+                "profileId": {"_id": "profile-web", "name": "Web connections"},
+            }
+        ]
+
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._account_worker("refresh", "sk_" + "a" * 64, "publish-project")
+
+        client.list_accounts.assert_called_once_with(platforms=("tiktok", "youtube", "facebook", "instagram"))
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "accounts")
+        self.assertEqual(event["profile_id"], "profile-default")
+        self.assertEqual(event["accounts"][0]["_id"], "account-web")
+        with self.assertRaises(Empty):
+            self.controller._events.get_nowait()
+
+    def test_disconnect_worker_deletes_then_returns_the_fresh_account_list(self):
+        client = MagicMock()
+        client.list_profiles.return_value = [{"_id": "profile-default", "name": "Default"}]
+        client.list_accounts.return_value = [{"_id": "account-2", "platform": "youtube"}]
+
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._account_worker(
+                "disconnect",
+                "sk_" + "a" * 64,
+                "publish-project",
+                connected_account_count=2,
+                generation=1,
+                silent=False,
+                account_id="account-1",
+            )
+
+        client.disconnect_account.assert_called_once_with("account-1")
+        client.list_accounts.assert_called_once_with(platforms=("tiktok", "youtube", "facebook", "instagram"))
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "accounts")
+        self.assertEqual(event["message"], "Social account disconnected.")
+        self.assertEqual(event["accounts"], [{"_id": "account-2", "platform": "youtube"}])
+
+    def test_background_account_poll_detects_dashboard_disconnects(self):
+        self.controller._project_key = "publish-project"
+        self.controller._account_refresh_next = 0.0
+        with (
+            patch.object(self.controller, "_api_key", return_value="sk_" + "a" * 64),
+            patch.object(self.controller, "_start_account_worker", return_value=True) as refresh,
+        ):
+            self.controller._poll_connected_accounts()
+
+        refresh.assert_called_once_with("refresh", silent=True)
+
+    def test_account_refresh_clears_a_selection_removed_on_the_web(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.controller._accounts = [{"_id": "removed", "platform": "tiktok"}]
+        self.controller._state["selected_account_id"] = "removed"
+        self.controller._events.put(
+            {
+                "type": "accounts",
+                "project_key": "publish-project",
+                "profile_id": "profile-default",
+                "profile_name": "Default",
+                "profiles": [{"_id": "profile-default", "name": "Default"}],
+                "accounts": [],
+            }
+        )
+
+        with (
+            patch(
+                "linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings",
+                side_effect=lambda _root, **changes: {**self.controller._state, **changes},
+            ),
+            patch.object(self.controller, "_poll_connected_accounts"),
+        ):
+            self.controller.drain_events()
+
+        self.assertEqual(self.controller.connected_account_count, 0)
+        self.assertEqual(self.controller.selected_account_index, -1)
+        self.assertFalse(self.controller.account_ready)
+
+    def test_stale_background_refresh_cannot_restore_a_disconnected_account(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.controller._account_generation = 2
+        self.controller._background_account_refreshing = True
+        self.controller._accounts = []
+        self.controller._events.put(
+            {
+                "type": "accounts",
+                "project_key": "publish-project",
+                "profile_id": "profile-default",
+                "profile_name": "Default",
+                "profiles": [{"_id": "profile-default", "name": "Default"}],
+                "accounts": [{"_id": "disconnected", "platform": "youtube"}],
+                "generation": 1,
+                "silent": True,
+            }
+        )
+
+        with (
+            patch.object(self.controller, "_poll_connected_accounts"),
+            patch.object(self.controller, "_poll_oauth_accounts"),
+        ):
+            self.controller.drain_events()
+
+        self.assertEqual(self.controller.connected_account_count, 0)
+        self.assertFalse(self.controller._background_account_refreshing)
+
+    def test_silent_refresh_ignores_volatile_api_fields_without_rebuilding_the_ui(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.controller._accounts = [
+            {
+                "_id": "youtube-account",
+                "platform": "youtube",
+                "displayName": "Channel",
+                "updatedAt": "old",
+            }
+        ]
+        self.controller._state.update(
+            {
+                "selected_account_id": "youtube-account",
+                "selected_platform": "youtube",
+            }
+        )
+        self.controller._creator_info_loaded = True
+        self.controller._events.put(
+            {
+                "type": "accounts",
+                "project_key": "publish-project",
+                "profile_id": "profile-default",
+                "profile_name": "Default",
+                "profiles": [{"_id": "profile-default", "name": "Default"}],
+                "accounts": [
+                    {
+                        "_id": "youtube-account",
+                        "platform": "youtube",
+                        "displayName": "Channel",
+                        "updatedAt": "new",
+                    }
+                ],
+                "generation": 0,
+                "silent": True,
+            }
+        )
+        emissions_before = self.host.tiktokPublishChanged.emissions
+
+        with (
+            patch.object(self.controller, "_sync_model") as sync_model,
+            patch.object(self.controller, "_poll_connected_accounts"),
+            patch.object(self.controller, "_poll_oauth_accounts"),
+        ):
+            self.controller.drain_events()
+
+        sync_model.assert_not_called()
+        self.assertEqual(self.host.tiktokPublishChanged.emissions, emissions_before)
+
+    def test_stale_creator_response_cannot_overwrite_new_platform_settings(self):
+        self.controller._project_key = "publish-project"
+        self.controller._state["selected_account_id"] = "youtube-account"
+        self.controller._creator_generation = 2
+        self.controller._privacy_levels = ["public", "private"]
+        self.controller._events.put(
+            {
+                "type": "creator",
+                "project_key": "publish-project",
+                "account_id": "old-tiktok-account",
+                "generation": 1,
+                "levels": ["PUBLIC_TO_EVERYONE"],
+                "interactions": {"comment": True, "duet": True, "stitch": True},
+                "can_post_more": True,
+            }
+        )
+
+        with (
+            patch.object(self.controller, "_poll_connected_accounts"),
+            patch.object(self.controller, "_poll_oauth_accounts"),
+        ):
+            self.controller.drain_events()
+
+        self.assertEqual(self.controller._privacy_levels, ["public", "private"])
+
+    def test_account_labels_include_the_zernio_profile_when_available(self):
+        label = self.controller._account_label(
+            {
+                "_id": "account-1",
+                "displayName": "Creator",
+                "username": "@creator",
+                "profileId": {"_id": "profile-1", "name": "Main brand"},
+            }
+        )
+
+        self.assertEqual(label, "TikTok — Creator · Main brand")
+
+    def test_account_event_updates_the_ui_visible_account_list(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.controller._events.put(
+            {
+                "type": "accounts",
+                "project_key": "publish-project",
+                "profile_id": "profile-default",
+                "profile_name": "Default",
+                "profiles": [{"_id": "profile-default", "name": "Default"}],
+                "accounts": [
+                    {
+                        "_id": "account-1",
+                        "platform": "tiktok",
+                        "displayName": "Creator",
+                        "profileId": {"_id": "profile-default", "name": "Default"},
+                    }
+                ],
+            }
+        )
+
+        with (
+            patch(
+                "linsub.desktop.social_publish_controller.tiktok_publish.update_publish_settings",
+                return_value={"selected_account_id": "account-1"},
+            ),
+            patch.object(self.controller, "_start_creator_info_worker", return_value=True),
+        ):
+            self.controller.drain_events()
+
+        self.assertEqual(self.controller.connected_account_count, 1)
+        self.assertEqual(self.controller.profile_count, 1)
+        self.assertEqual(self.controller.account_names, ["TikTok — Creator · Default"])
+        self.assertGreater(self.host.tiktokPublishChanged.emissions, 0)
+
+    def test_oauth_sync_waits_for_a_new_account_instead_of_accepting_stale_results(self):
+        self.controller._project_key = "publish-project"
+        self.controller._project_root = "D:/LinSubData/publish-project"
+        self.controller._accounts = [{"_id": "existing", "platform": "tiktok"}]
+        self.controller._state["selected_account_id"] = "existing"
+        self.controller._start_oauth_sync()
+
+        stale_event = {
+            "type": "accounts",
+            "project_key": "publish-project",
+            "profile_id": "profile-default",
+            "profile_name": "Default",
+            "profiles": [{"_id": "profile-default", "name": "Default"}],
+            "accounts": [{"_id": "existing", "platform": "tiktok"}],
+        }
+        self.controller._events.put(stale_event)
+        with (
+            patch.object(self.controller, "_start_creator_info_worker", return_value=True),
+            patch.object(self.controller, "_poll_oauth_accounts"),
+        ):
+            self.controller.drain_events()
+        self.assertTrue(self.controller.oauth_sync_pending)
+
+        self.controller._events.put(
+            {
+                **stale_event,
+                "accounts": [
+                    {"_id": "existing", "platform": "tiktok"},
+                    {"_id": "new-account", "platform": "youtube"},
+                ],
+            }
+        )
+        with (
+            patch.object(self.controller, "_start_creator_info_worker", return_value=True),
+            patch.object(self.controller, "_poll_oauth_accounts"),
+        ):
+            self.controller.drain_events()
+        self.assertFalse(self.controller.oauth_sync_pending)
+        self.assertEqual(self.controller.connected_account_count, 2)
+
+    def test_pending_oauth_connection_refreshes_accounts_automatically(self):
+        self.controller._project_key = "publish-project"
+        self.controller._oauth_sync_pending = True
+        self.controller._oauth_sync_deadline = float("inf")
+        self.controller._oauth_sync_next = 0.0
+
+        with patch.object(self.controller, "_start_account_worker", return_value=True) as refresh:
+            self.controller._poll_oauth_accounts()
+
+        refresh.assert_called_once_with("refresh", silent=True)
+
+    def test_connection_prefers_the_existing_linsub_profile(self):
+        profile = self.controller._connection_profile(
+            [
+                {"_id": "default", "name": "Default", "isDefault": True},
+                {"_id": "linsub", "name": "LinSub"},
+            ]
+        )
+
+        self.assertEqual(profile["_id"], "linsub")
+
+    def test_third_connection_is_not_blocked_when_zernio_returns_authorization_url(self):
+        client = MagicMock()
+        client.list_profiles.return_value = [{"_id": "linsub", "name": "LinSub"}]
+        client.get_connect_url.return_value = "https://zernio.com/connect/third"
+
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._account_worker(
+                "connect",
+                "sk_" + "a" * 64,
+                "publish-project",
+                "instagram",
+                2,
+            )
+
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "oauth")
+        self.assertEqual(event["platform"], "instagram")
+        self.assertEqual(event["url"], "https://zernio.com/connect/third")
+
+    def test_connection_uses_the_verified_cached_profile_without_listing_profiles(self):
+        client = MagicMock()
+        client.get_connect_url.return_value = "https://zernio.com/connect/youtube"
+
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._account_worker(
+                "connect",
+                "sk_" + "a" * 64,
+                "publish-project",
+                "youtube",
+                cached_profile_id="profile-cached",
+                cached_profile_name="LinSub",
+                cached_profiles=[{"_id": "profile-cached", "name": "LinSub"}],
+            )
+
+        client.list_profiles.assert_not_called()
+        client.get_connect_url.assert_called_once_with("profile-cached", "youtube")
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "oauth")
+        self.assertEqual(event["profile_id"], "profile-cached")
+
+    def test_unexpected_account_worker_error_always_releases_the_ui(self):
+        client = MagicMock()
+        client.list_profiles.side_effect = RuntimeError("malformed response")
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._account_worker(
+                "refresh",
+                "sk_" + "a" * 64,
+                "publish-project",
+                generation=7,
+            )
+
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "error")
+        self.assertEqual(event["project_key"], "publish-project")
+        self.assertEqual(event["generation"], 7)
+        self.assertNotIn("malformed response", event["message"])
+
+    def test_malformed_presign_response_finishes_publish_as_failed(self):
+        client = MagicMock()
+        client.presign_video.return_value = []
+        item = {
+            "id": "item-1",
+            "file_path": "D:/video.mp4",
+            "caption": "Caption",
+            "hashtags": "#tag",
+            "request_id": "request-1",
+        }
+        settings = {
+            "platform": "tiktok",
+            "account_id": "account-1",
+            "privacy_level": "PUBLIC_TO_EVERYONE",
+            "publish_now": True,
+            "allow_comment": True,
+            "allow_duet": True,
+            "allow_stitch": True,
+            "share_to_feed": True,
+            "ai_generated": False,
+            "first_comment": "",
+        }
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._publish_worker(
+                "sk_" + "a" * 64,
+                "publish-project",
+                item,
+                settings,
+            )
+
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "publish_finished")
+        self.assertEqual(event["status"], "failed")
+        self.assertEqual(event["item_id"], "item-1")
+        self.assertNotIn("list", event["error"])
+
+    def test_connection_refreshes_only_when_the_cached_profile_was_deleted(self):
+        client = MagicMock()
+        client.list_profiles.return_value = [{"_id": "profile-new", "name": "LinSub"}]
+
+        def connect_url(profile_id, _platform):
+            if profile_id == "profile-cached":
+                raise zernio.ZernioError("Zernio request failed (HTTP 404): profile not found")
+            return "https://zernio.com/connect/recovered"
+
+        client.get_connect_url.side_effect = connect_url
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._account_worker(
+                "connect",
+                "sk_" + "a" * 64,
+                "publish-project",
+                "youtube",
+                cached_profile_id="profile-cached",
+            )
+
+        client.list_profiles.assert_called_once_with()
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "oauth")
+        self.assertEqual(event["profile_id"], "profile-new")
+
+    def test_third_connection_billing_failure_has_a_clear_message(self):
+        client = MagicMock()
+        client.list_profiles.return_value = [{"_id": "linsub", "name": "LinSub"}]
+        client.get_connect_url.return_value = ""
+
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._account_worker(
+                "connect",
+                "sk_" + "a" * 64,
+                "publish-project",
+                "instagram",
+                2,
+            )
+
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "error")
+        self.assertIn("first 2 connected accounts", event["message"])
+        self.assertIn("billing", event["message"])
+
+    def test_platform_published_status_replaces_stale_local_publishing_state(self):
+        with tempfile.TemporaryDirectory() as project_root:
+            media = Path(project_root, "publishing", "media", "clip.mp4")
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"video")
+            item = tiktok_publish.new_item(str(media), "", 0, "Caption", "#tag")
+            item.update({"status": "publishing", "zernio_post_id": "post-1"})
+            state = tiktok_publish.empty_state()
+            state["items"] = [item]
+            tiktok_publish.save_state(project_root, state)
+            self.controller._project_key = "publish-project"
+            self.controller._project_root = project_root
+            self.controller._reload()
+            self.controller._post_status_refreshing = True
+            self.controller._events.put(
+                {
+                    "type": "statuses",
+                    "project_key": "publish-project",
+                    "updates": [
+                        {
+                            "item_id": item["id"],
+                            "status": "published",
+                            "url": "https://www.tiktok.com/@creator/video/123",
+                            "error": "",
+                        }
+                    ],
+                }
+            )
+
+            with patch("linsub.desktop.social_publish_controller.project_store.touch_project_by_key"):
+                self.controller.drain_events()
+
+            restored = tiktok_publish.load_state(project_root)["items"][0]
+            self.assertEqual(restored["status"], "published")
+            self.assertEqual(self.controller.posted_count, 1)
+            self.assertFalse(self.controller._post_status_refreshing)
+            self.assertEqual(self.host.tiktok_publish_items.items[0]["status"], "published")
+
+    def test_create_post_retry_keeps_request_id_and_recovers_original_post(self):
+        client = MagicMock()
+        client.create_video_post.side_effect = [
+            zernio.ZernioError("response lost", status=0),
+            {"existingPost": {"id": "post-accepted", "status": "publishing"}},
+        ]
+        arguments = {
+            "platform": "tiktok",
+            "account_id": "account-1",
+            "content": "Caption #tag",
+            "media_url": "https://media.example/video.mp4",
+            "privacy_level": "PUBLIC_TO_EVERYONE",
+            "publish_now": True,
+            "request_id": "stable-request-id",
+        }
+
+        with patch("linsub.desktop.social_publish_controller.time.sleep"):
+            result = _create_post_idempotently(client, arguments)
+
+        self.assertEqual(result["existingPost"]["id"], "post-accepted")
+        self.assertEqual(client.create_video_post.call_count, 2)
+        for call in client.create_video_post.call_args_list:
+            self.assertEqual(call.kwargs["request_id"], "stable-request-id")
+
+    def test_create_post_recovers_from_recent_posts_after_all_responses_are_lost(self):
+        client = MagicMock()
+        client.create_video_post.side_effect = zernio.ZernioError("response lost", status=0)
+        client.list_posts.return_value = [
+            {"id": "post-accepted", "requestId": "stable-request-id", "status": "publishing"}
+        ]
+        arguments = {
+            "platform": "youtube",
+            "account_id": "account-1",
+            "content": "Caption",
+            "media_url": "https://media.example/video.mp4",
+            "privacy_level": "private",
+            "publish_now": True,
+            "request_id": "stable-request-id",
+        }
+
+        with patch("linsub.desktop.social_publish_controller.time.sleep"):
+            result = _create_post_idempotently(client, arguments)
+
+        self.assertEqual(result["existingPost"]["id"], "post-accepted")
+        self.assertEqual(client.create_video_post.call_count, 3)
+
+    def test_create_post_recovers_when_list_omits_request_id(self):
+        client = MagicMock()
+        client.create_video_post.side_effect = zernio.ZernioError("response lost", status=0)
+        client.list_posts.return_value = [
+            {
+                "id": "post-accepted",
+                "content": "Caption #tag",
+                "status": "publishing",
+                "mediaItems": [{"type": "video", "url": "https://media.example/video.mp4"}],
+                "platforms": [
+                    {
+                        "platform": "tiktok",
+                        "accountId": {"_id": "account-1"},
+                        "status": "publishing",
+                    }
+                ],
+            }
+        ]
+        arguments = {
+            "platform": "tiktok",
+            "account_id": "account-1",
+            "content": "Caption #tag",
+            "media_url": "https://media.example/video.mp4",
+            "privacy_level": "PUBLIC_TO_EVERYONE",
+            "publish_now": True,
+            "request_id": "stable-request-id",
+        }
+
+        with patch("linsub.desktop.social_publish_controller.time.sleep"):
+            result = _create_post_idempotently(client, arguments)
+
+        self.assertEqual(result["existingPost"]["id"], "post-accepted")
+        self.assertEqual(client.create_video_post.call_count, 3)
+
+    def test_status_worker_uses_recent_post_when_detail_endpoint_lacks_permalink(self):
+        client = MagicMock()
+        client.get_post.return_value = {"id": "post-1", "status": "published"}
+        client.list_posts.return_value = [
+            {
+                "id": "post-1",
+                "status": "published",
+                "platforms": [
+                    {
+                        "platform": "tiktok",
+                        "status": "published",
+                        "platformPostUrl": "https://www.tiktok.com/@creator/video/123",
+                    }
+                ],
+            }
+        ]
+
+        with patch(
+            "linsub.desktop.social_publish_controller.zernio.ZernioClient",
+            return_value=client,
+        ):
+            self.controller._status_worker(
+                "sk_" + "a" * 64,
+                "publish-project",
+                [("item-1", "post-1", "tiktok")],
+            )
+
+        event = self.controller._events.get_nowait()
+        self.assertEqual(event["type"], "statuses")
+        self.assertEqual(
+            event["updates"][0]["url"],
+            "https://www.tiktok.com/@creator/video/123",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

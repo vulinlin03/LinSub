@@ -1,0 +1,161 @@
+# Release readiness
+
+Current owned-source license is LinSub Source-Available 1.0, approved by the
+owner on 2026-10-01; application/CLA/brand terms remain drafts. [Licensing review](licensing-review.md) records
+scoped technical evidence for rights scope, OmniVoice NonCommercial
+models/samples, FFmpeg source closure and Qt LGPL obligations. Run
+`scripts/verify-legal-state.py`; public packaging also requires
+`--public-release` and reviewed clearance evidence. Do not activate draft terms
+through installer metadata or restrict independently granted rights.
+
+[Documentation](README.md) · [Dependency security](dependency-security.md) · [Tiếng Việt](release-readiness.vi.md)
+
+Last reviewed: **2026-10-06**. The owner selected the no-certificate public unsigned path. Technical review is not independent legal certification. See [the Windows release guide](windows-release-setup.vi.md) for the complete workflow.
+
+This is the authoritative checklist for a public Windows build. A source checkout passing unit tests is not, by itself, a releasable artifact.
+
+## Status vocabulary
+
+- **Complete:** implemented and covered by automated evidence.
+- **Release blocker:** public distribution is prohibited until the acceptance condition is satisfied.
+- **Production follow-up:** not required for an internal engineering build, but required before broad production use.
+
+## Control register
+
+| ID | Control | Status | Acceptance condition |
+| --- | --- | --- | --- |
+| 1 | Project identity and deletion | Complete | UUID identity, registered roots, legacy preservation, shared-root/path-traversal checks, and deletion tests. |
+| 2 | License and third-party compliance | **Release blocker** | Active source license, preserved earlier grants/component notices, OmniVoice checkpoint review, FFmpeg/GPL source obligations, and public release approval. |
+| 3 | Clean reproducible artifact | **Release blocker until clean build** | Committed clean tree, complete gate, isolated frozen smoke, build metadata, and verified checksums. |
+| 4 | Installer and unsigned distribution | **Release blocker until acceptance** | Clean artifact, Windows acceptance matrix, explicit unsigned status and security-policy limitations. Certificate optional. |
+| 5 | Model integrity | Complete | Immutable revision, size, and SHA-256 for HY-MT2 CPU/GPU, Whisper, OmniVoice, OCR, Demucs, VAD, and alignment assets. |
+| 6 | Single instance | Complete | Per-user local server, activation handoff, stale-server recovery, and smoke isolation. |
+| 7 | Project index recovery | Complete | Interprocess lock, atomic write, backup, quarantine, manifest rebuild, and write blocking after unrecoverable corruption. |
+| 8 | Schema migration | Complete for current schema | Sequential migration, backup, defaults, legacy roots, and future-schema rejection. Project/video schema versions must match current source at release time. |
+| 9 | Dependency reproducibility | Complete | Hash-locked Windows/Python 3.13 set, CUDA variant, source/lock fingerprint, and environment verification. |
+| 10 | Disk and cache policy | Complete for tooling | Core artifact preflight, per-pack resource estimates, safe headroom, resumable partials, and bounded Manual caches. |
+| 11 | Offline/privacy claims | Complete | UI and documentation distinguish local processing from model download, optional Gemini translation, URL import, and social publishing. |
+| 12 | Diagnostics | Complete | Rotating logs, build ID, Python/thread/Qt capture, redacted bounded diagnostic export excluding project media. |
+| 13 | Shutdown and recovery | Complete | Confirmation, pause/cancel, bounded worker wait, child-process containment, and interrupted-video recovery. |
+| 14 | Runtime containment | Complete | Frozen mutable data below the chosen local install root; source mode supports `LINSUB_HOME`. |
+| 15 | Source hygiene | **Release blocker until clean build** | No obsolete source/build output, documentation matches architecture, and `git status --porcelain` is empty. |
+| 16 | Vulnerability audit | Complete with controlled exceptions | Audit gate passes with only the reviewed exceptions in [dependency-security.md](dependency-security.md). |
+| 17 | Zernio publishing | Production follow-up | Real-account end-to-end validation for each platform, quotas, failure recovery, consent, and current third-party terms. |
+| 18 | Independent AI engines | **Release blocker until archives are pinned** | CPU, CUDA 12.8 and vision archives; exact URL/size/SHA-256; profile smoke; install/resume/rollback/remove acceptance. Unsigned public mode supported. |
+
+## License gate
+
+Primary references:
+
+- [Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html)
+- [FFmpeg legal checklist](https://ffmpeg.org/legal.html)
+- [FFmpeg license](https://ffmpeg.org/doxygen/trunk/md_LICENSE.html)
+- [HY-MT2 model card](https://huggingface.co/tencent/Hy-MT2-1.8B)
+- [Whisper large-v3-turbo model card](https://huggingface.co/openai/whisper-large-v3-turbo)
+- [OmniVoice source](https://github.com/k2-fsa/OmniVoice)
+- [OmniVoice model](https://huggingface.co/k2-fsa/OmniVoice)
+
+Each artifact must contain:
+
+```text
+LICENSE.txt
+NOTICE.txt
+THIRD_PARTY_NOTICES.md
+licenses/
+BUILD-INFO.json
+SHA256SUMS.txt
+```
+
+`scripts/generate-third-party-notices.py --strict` must pass. The LinSub source license does not override a model, font, codec, or dependency license. In particular, the OmniVoice SDK and checkpoint require separate analysis, and an upstream FFmpeg source archive alone does not prove that all corresponding-source obligations of statically linked GPL components are satisfied.
+
+## Source verification gate
+
+Run from a clean committed checkout:
+
+```powershell
+.\scripts\test.ps1
+.\scripts\audit-dependencies.ps1
+```
+
+The test gate compiles Python, runs correctness lint, executes the unit/integration suite, and requires `qmllint` without diagnostics. Packaging changes also require runtime, dependency-lock, third-party notice, and model-manifest verification.
+
+Do not record a permanent test count here. The authoritative count is the output of the release commit's gate.
+
+## Frozen artifact gate
+
+The only supported build entry point is:
+
+```powershell
+.\scripts\build-exe.ps1 -CoreLayout -UnsignedRelease
+```
+
+For an internal engineering artifact from a working tree that is still under review:
+
+```powershell
+.\scripts\build-exe.ps1 -AllowDirtyBuild -AllowUnsigned
+```
+
+`-AllowUnsigned` remains internal-only. `-UnsignedRelease` explicitly permits a public unsigned candidate without relaxing legal, resource or clean-source gates. `-AllowDirtyBuild` records dirty provenance and makes the artifact ineligible for the public installer gate. These modes cannot be combined.
+
+The build must:
+
+1. reject an unsuitable or dirty release source state;
+2. run source, dependency, native-tool, and notice checks;
+3. remove only the validated previous artifact target;
+4. create a PyInstaller `onedir` distribution;
+5. copy licenses and notices;
+6. prove that AI engines, large/unpinned model payloads and mutable runtime data are absent; only the explicitly checksum-pinned integrated speaker model may be included;
+7. run frozen self-tests, FFmpeg/FFprobe checks, and isolated Qt/QML startup;
+8. create `BUILD-INFO.json` and `SHA256SUMS.txt` only after smoke success;
+9. verify every declared artifact file and checksum.
+
+Large AI engines/models are optional resource packs and must not be folded into Core. The small integrated CPU speaker model is the sole pinned model exception. Resource Manager installs only packs the user confirms, verifies their immutable checksum, and activates them after an engine smoke test. `prepare-offline-models.ps1` is a development/runtime probe helper, not packaging input.
+
+## Installer gate
+
+Build an installer only from a verified frozen artifact:
+
+```powershell
+.\scripts\build-installer.ps1 -ArtifactPath .\dist\LinSub-public -UnsignedRelease
+```
+
+The installer must use an artifact-derived disk estimate, permit a writable local drive, reject network destinations, preserve mutable runtime data during ordinary upgrades, and delete runtime data only after a separate explicit uninstall choice. Silent uninstall retains runtime data.
+
+Disk figures have distinct meanings. Setup calculates the Core requirement from the finalized artifact, real staging space, the temporary second copy needed during an upgrade, and a 2 GiB operational reserve. It does not include optional AI packs, project media, exports, or cache. The Core release gate rejects an artifact above 1.25 GiB, a fresh-install requirement above 4 GiB, or a recommendation above 8 GiB. Resource Manager performs a separate preflight for every confirmed pack: remaining download bytes, installed bytes, rollback bytes, and the same 2 GiB reserve. Export performs its own estimate from duration, codec, bitrate, and temporary render needs. Generated manifests and the values displayed by Setup are authoritative; documentation must never substitute a stale candidate-build measurement.
+
+Public distribution may be unsigned through the explicit `-UnsignedRelease` path. Document Unknown publisher, SmartScreen/Smart App Control and enterprise-policy limitations; do not disable Windows protection. Signing remains optional. The builder runs fresh/start/repair/uninstall/reinstall/data/hash acceptance using the same public payload and setup behavior with a private AppId. This protects existing installations and is not a full Windows machine matrix. An additional exact-public-installer test on a clean VM with `-AllowRegisteredInstall` is recommended; record the actual artifact and host tested. Never infer Windows 10 coverage from a Windows 11 test. Skipping all acceptance invalidates a release candidate.
+
+An internal installer may be produced from explicitly engineering-provenance artifacts:
+
+```powershell
+.\scripts\build-installer.ps1 -ArtifactPath .\dist\LinSub-development -AllowUnsigned -EngineeringBuild
+```
+
+Internal filenames contain `DEVELOPMENT`. The public installer is named `LinSub-<version>-Setup.exe`; signing status is documented separately. For a public unsigned candidate, run this only on a clean VM:
+
+```powershell
+.\scripts\test-installer.ps1 -InstallerPath .\dist\installer\LinSub-<version>-Setup.exe -AllowRegisteredInstall
+```
+
+## Windows acceptance matrix
+
+- Windows 10 version 1809 or later and Windows 11 x64 clean installations.
+- CPU-only Intel and AMD systems with representative 16/24/32 GB memory.
+- NVIDIA systems with 7 GB, 8 GB, and 12 GB or larger VRAM; unsupported BF16 and missing/older drivers.
+- Core-only offline launch, slow network, and interrupted pack downloads.
+- Supported public URL imports, extractor changes, cookies, rate limiting, and cancellation.
+- Unicode Windows account, project path, file name, and Vietnamese IME input.
+- Low disk, alternate local drive, removable drive behavior, sleep/hibernate, and interrupted GPU work.
+- Repeated preview seek/source swap, audio shutdown, pause/resume/restart, and long batch queue.
+- Upgrade from every supported persisted schema and a corrupted-index recovery case.
+- Zernio test accounts for every advertised destination platform before production approval.
+
+## Engine-pack gate
+
+Core and engine artifacts are separate release units. Before a public Core build, build each engine from its reviewed hash lock with `-UnsignedRelease`, run its profile smoke test, upload the immutable ZIP, then use `finalize-resource-pack.py` to record the real URL, compressed size, installed size and SHA-256. `verify-resource-pack-manifest.py --strict` must pass; estimated or empty engine metadata is a release blocker. No certificate is required for the selected unsigned path.
+
+Acceptance must cover interrupted download and resume, checksum rejection, atomic activation, rollback after a failed smoke test, safe removal, storage migration to another local drive, and refusal to remove an engine in use. A Core-only machine must still open Home and edit media without importing an inference package.
+
+## Release decision
+
+An internal engineering build may be produced for verification when its intended scope and unsigned status are explicit. Public release remains blocked until legal/license review, pinned engine archives, a clean reproducible artifact, source hygiene and Windows acceptance are satisfied. Unsigned public distribution is an explicit owner choice, not legal/resource clearance. This checklist records engineering evidence and does not replace professional legal review.

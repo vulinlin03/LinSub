@@ -1,0 +1,4 @@
+-e .
+
+# Core includes the lightweight ONNX speaker worker. Larger AI engines use the
+# dedicated profile inputs below and communicate with Core through protocol 1.
