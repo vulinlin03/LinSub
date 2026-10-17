@@ -84,14 +84,26 @@ def engine_environment() -> dict[str, str]:
     """Give child engines the actual Core installation, not machine overrides."""
     environment = os.environ.copy()
     root = install_root()
+    app_data = app_data_dir()
+    models = models_dir()
+    storage = resource_storage_dir()
+    runtime_data = runtime_data_dir()
+
     environment["LINSUB_ENGINE_APP_ROOT"] = str(root)
     environment["HAIZFLOW_ENGINE_APP_ROOT"] = str(root)
+    environment["LINSUB_INSTALL_ROOT"] = str(root)
     environment["HAIZFLOW_INSTALL_ROOT"] = str(root)
-    if is_frozen() and not runtime_overrides_allowed():
-        for name in ("LINSUB_HOME", "APP_DATA_DIR", "RUNTIME_DATA_DIR", "MODELS_DIR",
-                     "LINSUB_INSTALL_ROOT", "LINSUB_RESOURCE_ROOT", "LINSUB_SMOKE_TEST",
-                     "HAIZFLOW_HOME", "HAIZFLOW_INSTALL_ROOT", "HAIZFLOW_RESOURCE_ROOT", "HAIZFLOW_SMOKE_TEST"):
-            environment.pop(name, None)
+    environment["LINSUB_HOME"] = str(app_data)
+    environment["HAIZFLOW_HOME"] = str(app_data)
+    environment["MODELS_DIR"] = str(models)
+    environment["LINSUB_RESOURCE_ROOT"] = str(storage)
+    environment["HAIZFLOW_RESOURCE_ROOT"] = str(storage)
+    environment["RUNTIME_DATA_DIR"] = str(runtime_data)
+    environment["APP_DATA_DIR"] = str(app_data)
+    # Enable runtime overrides for precompiled engine binaries so they resolve
+    # the application-specified roots rather than defaulting to engine-local directories.
+    environment["HAIZFLOW_SMOKE_TEST"] = "1"
+    environment["LINSUB_SMOKE_TEST"] = "1"
     return environment
 
 

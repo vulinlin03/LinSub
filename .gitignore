@@ -30,6 +30,7 @@ runtime/packages/
 runtime/cache/
 runtime/models/
 runtime/config/
+runtime/home/
 **/bin/*.exe
 **/bin/ollama/
 *.exe
