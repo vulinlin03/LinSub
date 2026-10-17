@@ -6316,7 +6316,23 @@ class LinSubController(QObject):
                     if "font_family" in patch:
                         clip.style_override["font_fingerprint"] = resolved["font_fingerprint"]
 
-        return self._apply_editor_mutation("apply_text_style", apply)
+        success = self._apply_editor_mutation("apply_text_style", apply)
+        if success and scope == "project":
+            style_dict = self._subtitle_style.model_dump()
+            for key in ("position_y_percent", "position_x_percent", "font_size", "font_weight", "bold", "italic", "text_color", "karaoke_color", "outline_color", "outline_width"):
+                if key in patch:
+                    if key == "font_weight":
+                        style_dict["bold"] = int(patch[key]) >= 600
+                    elif key == "outline_width":
+                        style_dict["outline"] = int(patch[key])
+                    elif hasattr(self._subtitle_style, key):
+                        style_dict[key] = patch[key]
+            try:
+                self._subtitle_style = SubtitleStyle.model_validate(style_dict)
+                self.saveSelectedVideoSettings()
+            except Exception:
+                pass
+        return success
 
     @Slot("QVariantList", result=bool)
     def resetTextStyleOverrides(self, target_ids) -> bool:

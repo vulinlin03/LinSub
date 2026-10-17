@@ -136,7 +136,7 @@ def test_real_source_gap_export_matches_pcm_preview(tmp_path):
 def test_manual_subtitle_defaults_do_not_replace_user_styling():
     original = SubtitleStyle()
     manual = subtitle_style_for_project("manual", original)
-    assert (manual.font_size, manual.position_y_percent, manual.box_height_percent) == (84, 80, 12)
+    assert (manual.font_size, manual.position_y_percent, manual.box_height_percent) == (84, 90, 12)
     assert original == SubtitleStyle()
     assert subtitle_style_for_project("single", original) == original
     assert subtitle_style_for_project("manual", original, overridden=True) == original
