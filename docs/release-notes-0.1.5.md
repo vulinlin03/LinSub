@@ -1,6 +1,6 @@
 # LinSub 0.1.5
 
-**[Tải bộ cài Windows — LinSub-0.1.5-Setup.exe](https://github.com/linsub/linsub/releases/download/v0.1.5/LinSub-0.1.5-Setup.exe)**
+**[Tải bộ cài Windows — LinSub-0.1.5-Setup.exe](https://github.com/vulinlin03/LinSub/releases/download/v0.1.5/LinSub-0.1.5-Setup.exe)**
 
 LinSub là ứng dụng miễn phí để **tải video hàng loạt, dịch video, tạo phụ đề và lồng tiếng** trên Windows. Bạn có thể xử lý tự động, chỉnh từng bước trong trình sửa Thủ công hoặc xử lý nhiều video theo hàng đợi.
 
@@ -15,7 +15,7 @@ LinSub là ứng dụng miễn phí để **tải video hàng loạt, dịch vid
 
 ## Cài đặt và sử dụng
 
-1. **[Bấm để tải bộ cài EXE](https://github.com/linsub/linsub/releases/download/v0.1.5/LinSub-0.1.5-Setup.exe)**, mở tệp và làm theo hướng dẫn. Bạn chỉ cần bộ cài này, không cần tải các tệp Core hay mã nguồn ở danh sách Assets.
+1. **[Bấm để tải bộ cài EXE](https://github.com/vulinlin03/LinSub/releases/download/v0.1.5/LinSub-0.1.5-Setup.exe)**, mở tệp và làm theo hướng dẫn. Bạn chỉ cần bộ cài này, không cần tải các tệp Core hay mã nguồn ở danh sách Assets.
 2. Mở LinSub, chọn **Cài đặt → Chung → CPU/GPU**, rồi vào **Gói tài nguyên** để cài các công cụ cần dùng. Không cần cài Python hay CUDA Toolkit riêng.
 3. Chọn **Dự án mới → Thủ công, Tự động hoặc Hàng loạt**, thêm video từ tệp hoặc liên kết.
 4. Chọn model và ngôn ngữ. Khi dùng Gemini, thêm key của bạn trong **Cài đặt → API Key**. HY-MT2 dịch trên máy, không cần key.
@@ -23,7 +23,7 @@ LinSub là ứng dụng miễn phí để **tải video hàng loạt, dịch vid
 
 Đã cài LinSub? Bấm **Phiên bản mới**, kiểm tra thông tin rồi xác nhận **Cập nhật**. Bản này có tệp cập nhật đầy đủ và cập nhật chênh lệch từ 0.1.4; không cần tải lại gói tài nguyên đã cài. Bạn cũng có thể dùng bộ cài EXE để nâng cấp.
 
-[Hướng dẫn cài đặt](https://github.com/linsub/linsub/blob/main/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/linsub/linsub/blob/main/docs/user-guide.vi.md) · [Website](https://linsub.pages.dev/) · [English guide](https://github.com/linsub/linsub/blob/main/docs/user-guide.md)
+[Hướng dẫn cài đặt](https://github.com/vulinlin03/LinSub/blob/main/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/vulinlin03/LinSub/blob/main/docs/user-guide.vi.md) · [Website](https://linsub.pages.dev/) · [English guide](https://github.com/vulinlin03/LinSub/blob/main/docs/user-guide.md)
 
 ## Có gì mới trong 0.1.5?
 
@@ -49,6 +49,6 @@ Windows 10 (1809 trở lên) hoặc Windows 11 x64; RAM hệ thống từ **16 G
 
 Checkpoint OmniVoice hiện tại **chỉ dành cho sử dụng phi thương mại**. Gemini, Zernio và các dịch vụ bên ngoài có hạn mức, chi phí và điều khoản riêng. Chỉ dùng video, nhạc và mẫu giọng bạn có quyền sử dụng.
 
-Bản Windows hiện chưa có chữ ký Authenticode. Windows có thể hiển thị cảnh báo nhà phát hành hoặc chặn tệp theo chính sách bảo mật. Tải từ repository chính thức và đọc [hướng dẫn cài đặt](https://github.com/linsub/linsub/blob/main/docs/install.vi.md); không cần tắt phần mềm bảo vệ.
+Bản Windows hiện chưa có chữ ký Authenticode. Windows có thể hiển thị cảnh báo nhà phát hành hoặc chặn tệp theo chính sách bảo mật. Tải từ repository chính thức và đọc [hướng dẫn cài đặt](https://github.com/vulinlin03/LinSub/blob/main/docs/install.vi.md); không cần tắt phần mềm bảo vệ.
 
 Tệp **ThirdPartySources** cung cấp nguồn thư viện theo giấy phép; các tệp **Core** dành cho cập nhật trong ứng dụng. Người dùng cài mới chỉ tải **Setup.exe**.

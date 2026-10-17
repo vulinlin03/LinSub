@@ -19,7 +19,7 @@ def runtime_overrides_allowed() -> bool:
     different installation drive. Frozen smoke tests deliberately opt out so
     they can use an isolated temporary directory.
     """
-    return not is_frozen() or os.getenv("LINSUB_SMOKE_TEST") == "1" or os.getenv("HAIZFLOW_SMOKE_TEST") == "1"
+    return not is_frozen() or os.getenv("LINSUB_SMOKE_TEST") == "1"
 
 
 def bundle_root() -> Path:
@@ -54,11 +54,11 @@ def install_root() -> Path:
         return Path(override).expanduser().resolve()
     if is_frozen():
         core = Path(sys.executable).absolute().parent
-        if Path(sys.executable).name in {"LinSubEngine.exe", "HaizFlowEngine.exe"} and not runtime_overrides_allowed():
+        if Path(sys.executable).name == "LinSubEngine.exe" and not runtime_overrides_allowed():
             # Optional engines may live on a different resource drive. Core
             # explicitly supplies its provisioned app root; never infer mutable
             # data from the immutable engine executable directory.
-            value = os.getenv("LINSUB_ENGINE_APP_ROOT", "") or os.getenv("HAIZFLOW_ENGINE_APP_ROOT", "")
+            value = os.getenv("LINSUB_ENGINE_APP_ROOT", "")
             root = Path(value)
             if not value or not root.is_absolute() or str(root).startswith("\\\\"):
                 raise ValueError("Hãy chạy bộ xử lý từ LinSub, không mở EXE của gói tài nguyên trực tiếp.")
@@ -85,11 +85,9 @@ def engine_environment() -> dict[str, str]:
     environment = os.environ.copy()
     root = install_root()
     environment["LINSUB_ENGINE_APP_ROOT"] = str(root)
-    environment["HAIZFLOW_ENGINE_APP_ROOT"] = str(root)
     if is_frozen() and not runtime_overrides_allowed():
         for name in ("LINSUB_HOME", "APP_DATA_DIR", "RUNTIME_DATA_DIR", "MODELS_DIR",
-                     "LINSUB_INSTALL_ROOT", "LINSUB_RESOURCE_ROOT", "LINSUB_SMOKE_TEST",
-                     "HAIZFLOW_HOME", "HAIZFLOW_INSTALL_ROOT", "HAIZFLOW_RESOURCE_ROOT", "HAIZFLOW_SMOKE_TEST"):
+                     "LINSUB_INSTALL_ROOT", "LINSUB_RESOURCE_ROOT", "LINSUB_SMOKE_TEST"):
             environment.pop(name, None)
     return environment
 
@@ -101,7 +99,7 @@ def update_state_dir() -> Path:
 def app_data_dir() -> Path:
     if not runtime_overrides_allowed():
         return install_root() / "runtime"
-    override = os.getenv("LINSUB_HOME") or os.getenv("HAIZFLOW_HOME") or os.getenv("APP_DATA_DIR")
+    override = os.getenv("LINSUB_HOME") or os.getenv("APP_DATA_DIR")
     if override:
         return Path(override).expanduser().resolve()
     # Portable-by-default layout: installer location determines where every
@@ -118,11 +116,10 @@ def runtime_data_dir() -> Path:
     if override:
         path = Path(override).expanduser()
         candidate = path.resolve() if path.is_absolute() else (app_data_dir() / path).resolve()
-        home_override = os.getenv("LINSUB_HOME") or os.getenv("HAIZFLOW_HOME")
+        home_override = os.getenv("LINSUB_HOME")
         if (
             home_override
             and os.getenv("LINSUB_SMOKE_TEST") != "1"
-            and os.getenv("HAIZFLOW_SMOKE_TEST") != "1"
             and not candidate.is_relative_to(Path(home_override).expanduser().resolve())
         ):
             return app_data_dir() / "data"
@@ -140,7 +137,7 @@ def models_dir() -> Path:
     if override and runtime_overrides_allowed():
         path = Path(override).expanduser()
         candidate = path.resolve() if path.is_absolute() else (app_data_dir() / path).resolve()
-        home_override = os.getenv("LINSUB_HOME") or os.getenv("HAIZFLOW_HOME")
+        home_override = os.getenv("LINSUB_HOME")
         if home_override and not candidate.is_relative_to(Path(home_override).expanduser().resolve()):
             return app_data_dir() / "models"
         return candidate
@@ -158,7 +155,7 @@ def resource_storage_dir() -> Path:
     be moved to another local drive. Invalid, missing, relative, and UNC paths
     safely fall back to the installation runtime directory.
     """
-    override = os.getenv("LINSUB_RESOURCE_ROOT") or os.getenv("HAIZFLOW_RESOURCE_ROOT")
+    override = os.getenv("LINSUB_RESOURCE_ROOT")
     if override and runtime_overrides_allowed():
         candidate = Path(override).expanduser()
         if candidate.is_absolute() and not str(candidate).startswith("\\\\"):

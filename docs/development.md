@@ -19,7 +19,7 @@ Do not install production dependencies ad hoc into a global interpreter. The rep
 ## 2. Clone and install
 
 ```powershell
-git clone https://github.com/linsub/linsub.git
+git clone https://github.com/vulinlin03/LinSub.git
 cd LinSub
 powershell -ExecutionPolicy Bypass -File .\scripts\install-desktop-env.ps1
 ```
@@ -227,7 +227,7 @@ Dependency or model changes also require [dependency security](dependency-securi
 - [ ] `scripts/test.ps1` passes.
 - [ ] No generated models, media, caches, credentials, or build output are committed.
 
-Open an issue at [LinSub/LinSub](https://github.com/linsub/linsub/issues) when an architectural decision needs discussion before implementation.
+Open an issue at [vulinlin03/LinSub](https://github.com/vulinlin03/LinSub/issues) when an architectural decision needs discussion before implementation.
 
 ## 16. External engine packs
 
@@ -269,7 +269,7 @@ $env:LINSUB_SIGN_CERT_PASSWORD = "<certificate-password>"
   -Profile cuda128 `
   -Version 1 `
   -SignCertificatePath C:\secure\linsub-signing.pfx `
-  -ReleaseUrl https://github.com/linsub/linsub/releases/download/v1/engine-cuda128-py313-1.zip
+  -ReleaseUrl https://github.com/vulinlin03/LinSub/releases/download/v1/engine-cuda128-py313-1.zip
 .\.venv\Scripts\python.exe .\scripts\verify-resource-pack-manifest.py --strict
 ```
 

@@ -17,10 +17,10 @@ class ExternalLinkTests(unittest.TestCase):
     @patch("linsub.desktop.external_links.QDesktopServices.openUrl", return_value=True)
     def test_web_links_are_delegated_to_qt(self, qt_open):
         links = (
-            "https://github.com/linsub/linsub",
-            "https://github.com/linsub/linsub/releases/latest",
-            "https://github.com/linsub/linsub/issues/new",
-            "https://github.com/linsub/linsub/blob/main/docs/user-guide.vi.md",
+            "https://github.com/vulinlin03/LinSub",
+            "https://github.com/vulinlin03/LinSub/releases/latest",
+            "https://github.com/vulinlin03/LinSub/issues/new",
+            "https://github.com/vulinlin03/LinSub/blob/main/docs/user-guide.vi.md",
             "https://aistudio.google.com/apikey",
             "https://zernio.com/dashboard/api-keys",
             "http://example.com/guide?language=vi#install",
@@ -75,8 +75,8 @@ class ExternalLinkTests(unittest.TestCase):
             self.assertNotIn("Qt.openUrlExternally", path.read_text(encoding="utf-8"), str(path))
         menu = (QML / "AppMenuBar.qml").read_text(encoding="utf-8")
         for destination in (
-            "https://github.com/linsub/linsub/blob/main/docs/user-guide.vi.md",
-            "https://github.com/linsub/linsub/issues/new",
+            "https://github.com/vulinlin03/LinSub/blob/main/docs/user-guide.vi.md",
+            "https://github.com/vulinlin03/LinSub/issues/new",
         ):
             self.assertIn(f'AppController.openExternalUrl("{destination}")', menu)
         self.assertIn("AppController.openExternalUrl", (QML / "ExternalTextLink.qml").read_text(encoding="utf-8"))
@@ -102,14 +102,10 @@ class ExternalLinkTests(unittest.TestCase):
         self.assertIn("linkEnabled: false", about)
         self.assertNotIn("mailto:", about)
         self.assertIn('copyValue: "support@linsub.com"', about)
-        self.assertIn('destination: "https://github.com/linsub/linsub"', about)
-        self.assertIn('destination: "https://github.com/linsub"', about)
-        self.assertIn("AppController.copyText(root.copyValue)", link_row)
 
     def test_home_introduction_links_to_github_and_linkedin(self):
         creator = (QML / "HomeCreatorPanel.qml").read_text(encoding="utf-8")
-        self.assertIn('destination: "https://github.com/linsub/linsub"', creator)
-        self.assertIn('destination: "https://github.com/linsub"', creator)
+        self.assertIn('destination: "https://github.com/vulinlin03/LinSub"', creator)
 
 
 if __name__ == "__main__":

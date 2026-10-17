@@ -25,6 +25,8 @@ data/
 # Large binaries
 runtime/bin/
 runtime/compliance/
+runtime/engines/
+runtime/packages/
 **/bin/*.exe
 **/bin/ollama/
 *.exe

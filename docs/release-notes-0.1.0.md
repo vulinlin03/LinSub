@@ -34,13 +34,13 @@ Windows 10 phiên bản 1809 trở lên hoặc Windows 11 x64; RAM từ 16 GiB. 
 
 Bộ cài không ký số. Windows có thể hiện nhà phát hành không xác định hoặc chặn ứng dụng chưa ký theo chính sách máy. Kiểm tra nguồn tải và SHA-256; không tắt bảo vệ Windows.
 
-[Cài đặt chi tiết](https://github.com/linsub/linsub/blob/v0.1.0/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/linsub/linsub/blob/v0.1.0/docs/user-guide.vi.md) · [Trợ giúp](https://github.com/linsub/linsub/blob/v0.1.0/docs/support.vi.md)
+[Cài đặt chi tiết](https://github.com/vulinlin03/LinSub/blob/v0.1.0/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/vulinlin03/LinSub/blob/v0.1.0/docs/user-guide.vi.md) · [Trợ giúp](https://github.com/vulinlin03/LinSub/blob/v0.1.0/docs/support.vi.md)
 
 ## Giấy phép
 
 LinSub miễn phí sử dụng theo LinSub Source-Available 1.0. **Model OmniVoice hiện tại chỉ được cấp phép cho mục đích phi thương mại.** Giấy phép ứng dụng không thay thế điều kiện của model, video hoặc mẫu giọng.
 
-Qt/PySide dùng LGPL; FFmpeg dùng GPL/LGPL tùy thành phần. Nguồn thư viện đi kèm nằm trong `LinSub-0.1.0-ThirdPartySources.zip` ở **Assets**. [Thông báo và giấy phép thư viện](https://github.com/linsub/linsub/blob/test/THIRD_PARTY_NOTICES.md).
+Qt/PySide dùng LGPL; FFmpeg dùng GPL/LGPL tùy thành phần. Nguồn thư viện đi kèm nằm trong `LinSub-0.1.0-ThirdPartySources.zip` ở **Assets**. [Thông báo và giấy phép thư viện](https://github.com/vulinlin03/LinSub/blob/test/THIRD_PARTY_NOTICES.md).
 
 ---
 
@@ -66,6 +66,6 @@ Requires Windows 10 version 1809 or later, or Windows 11 x64, and at least 16 Gi
 
 The installer is unsigned. Windows may show an unknown publisher or block execution under device policy. Verify the download source and SHA-256; do not disable Windows protection.
 
-[Installation](https://github.com/linsub/linsub/blob/v0.1.0/docs/install.md) · [User guide](https://github.com/linsub/linsub/blob/v0.1.0/docs/user-guide.md) · [Help](https://github.com/linsub/linsub/blob/v0.1.0/docs/support.md)
+[Installation](https://github.com/vulinlin03/LinSub/blob/v0.1.0/docs/install.md) · [User guide](https://github.com/vulinlin03/LinSub/blob/v0.1.0/docs/user-guide.md) · [Help](https://github.com/vulinlin03/LinSub/blob/v0.1.0/docs/support.md)
 
 LinSub is free to use under LinSub Source-Available 1.0. **The current OmniVoice model is for noncommercial use only.** Application terms do not replace model or imported-content licenses.

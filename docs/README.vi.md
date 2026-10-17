@@ -29,4 +29,4 @@ Các tài liệu dưới đây trình bày cách phần mềm được xây dự
 
 Repository hiển thị tài liệu tiếng Anh trước; tệp `.vi.md` tương ứng là bản tiếng Việt. Command, đường dẫn, tên thiết lập, trường schema và mã lỗi được giữ nguyên khi dịch có thể gây nhầm lẫn.
 
-Bạn có thể [góp ý cho tài liệu](https://github.com/linsub/linsub/issues) và ghi rõ trang cùng mục muốn bổ sung.
+Bạn có thể [góp ý cho tài liệu](https://github.com/vulinlin03/LinSub/issues) và ghi rõ trang cùng mục muốn bổ sung.

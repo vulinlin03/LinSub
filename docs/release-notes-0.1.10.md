@@ -1,6 +1,6 @@
 # LinSub 0.1.10
 
-[Tải bộ cài Windows](https://github.com/linsub/linsub/releases/download/v0.1.10/LinSub-0.1.10-Setup.exe)
+[Tải bộ cài Windows](https://github.com/vulinlin03/LinSub/releases/download/v0.1.10/LinSub-0.1.10-Setup.exe)
 
 ## Thay đổi
 

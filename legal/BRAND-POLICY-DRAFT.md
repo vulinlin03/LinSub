@@ -1,7 +1,7 @@
 # Official identity and brand — DRAFT
 
 **DRAFT — NOT IN FORCE.** LinSub was created by LinSub Team. Official project
-links are https://github.com/linsub/linsub and https://linsub.pages.dev/.
+links are https://github.com/vulinlin03/LinSub and https://github.com/vulinlin03/LinSub.
 
 Proposed policy: truthful references, reviews, tutorials and links may identify
 LinSub. Do not use the name or logo to imply an unofficial installer,

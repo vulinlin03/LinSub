@@ -1058,15 +1058,11 @@ class ResourcePackManager:
             environment = os.environ.copy()
             environment.update({
                 "LINSUB_HOME": smoke,
-                "HAIZFLOW_HOME": smoke,
                 "LINSUB_ENGINE_APP_ROOT": str(install_root()),
-                "HAIZFLOW_ENGINE_APP_ROOT": str(install_root()),
                 "RUNTIME_DATA_DIR": str(smoke_root / "data"),
                 "MODELS_DIR": str(smoke_root / "models"),
                 "LINSUB_TMP_DIR": str(smoke_root / "tmp"),
-                "HAIZFLOW_TMP_DIR": str(smoke_root / "tmp"),
                 "LINSUB_SMOKE_TEST": "1",
-                "HAIZFLOW_SMOKE_TEST": "1",
             })
             process = subprocess.Popen(
                 [str(executable), *command[1:]],

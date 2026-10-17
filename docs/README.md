@@ -29,4 +29,4 @@ The documents below cover implementation, testing, licensing and packaging requi
 
 English documents are listed first. Their `.vi.md` counterparts provide the same information in Vietnamese. Commands, paths, setting names, schema fields and error codes retain their source spelling where translating them would make the instructions ambiguous.
 
-You can [suggest documentation improvements](https://github.com/linsub/linsub/issues) and name the page and section you would like to expand.
+You can [suggest documentation improvements](https://github.com/vulinlin03/LinSub/issues) and name the page and section you would like to expand.

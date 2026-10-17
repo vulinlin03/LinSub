@@ -4,7 +4,7 @@
 The current root `LICENSE` and independent component licenses remain in force.
 
 LinSub was created by LinSub Team. Official downloads are linked from
-https://github.com/linsub/linsub/releases and https://linsub.pages.dev/.
+https://github.com/vulinlin03/LinSub/releases.
 
 1. **Free use.** You may install and run an authorized release without payment
    to its developer, for personal or business use, including commercial video

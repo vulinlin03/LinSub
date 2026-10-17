@@ -72,7 +72,7 @@ def build(output: Path) -> dict:
             raise ValueError("Source asset ZIP verification failed.")
     result = dict(schema=1, release_version=release_version, file=output.name,
                   sha256=digest(output), size=output.stat().st_size,
-                  url=f"https://github.com/linsub/linsub/releases/download/v{release_version}/" + output.name,
+                  url=f"https://github.com/vulinlin03/LinSub/releases/download/v{release_version}/" + output.name,
                   files=rows)
     manifest = output.with_suffix(".json")
     manifest.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

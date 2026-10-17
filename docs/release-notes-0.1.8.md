@@ -1,6 +1,6 @@
 # LinSub 0.1.8
 
-**[Tải bộ cài Windows — LinSub-0.1.8-Setup.exe](https://github.com/linsub/linsub/releases/download/v0.1.8/LinSub-0.1.8-Setup.exe)**
+**[Tải bộ cài Windows — LinSub-0.1.8-Setup.exe](https://github.com/vulinlin03/LinSub/releases/download/v0.1.8/LinSub-0.1.8-Setup.exe)**
 
 LinSub là ứng dụng miễn phí để tải video, dịch video, tạo phụ đề và lồng tiếng trên Windows. Bạn có thể xử lý tự động, chỉnh từng bước trong chế độ Thủ công hoặc chạy nhiều video theo hàng đợi.
 
@@ -15,7 +15,7 @@ LinSub là ứng dụng miễn phí để tải video, dịch video, tạo phụ
 
 ## Cài đặt và sử dụng
 
-1. **[Bấm để tải bộ cài EXE](https://github.com/linsub/linsub/releases/download/v0.1.8/LinSub-0.1.8-Setup.exe)**, mở tệp và làm theo hướng dẫn. Cài mới chỉ cần Setup.exe.
+1. **[Bấm để tải bộ cài EXE](https://github.com/vulinlin03/LinSub/releases/download/v0.1.8/LinSub-0.1.8-Setup.exe)**, mở tệp và làm theo hướng dẫn. Cài mới chỉ cần Setup.exe.
 2. Vào **Cài đặt → Chung**, chọn CPU/GPU; mở **Gói tài nguyên** để cài công cụ cần dùng. Không cần cài Python hoặc CUDA Toolkit riêng.
 3. Tạo dự án Thủ công, Tự động hoặc Hàng loạt; nhập video từ tệp hoặc liên kết.
 4. Chọn ngôn ngữ, model và giọng đọc. Gemini cần key của bạn; HY-MT2 dịch trên máy, không cần key.
@@ -23,7 +23,7 @@ LinSub là ứng dụng miễn phí để tải video, dịch video, tạo phụ
 
 Đang dùng **0.1.6 hoặc 0.1.7**? Bấm **Phiên bản mới → Kiểm tra lại → Cập nhật**, rồi chọn **Khởi động lại**. Có thể nâng trực tiếp lên 0.1.8, không cần cài bản trung gian. Dự án, cài đặt và tệp model đã tải được giữ nguyên. Sau cập nhật, cài phiên bản bộ xử lý CPU/CUDA mới nếu app yêu cầu trong **Gói tài nguyên**; các bản sửa inference cần engine mới, không chỉ Core. Bản này cung cấp gói cập nhật từ 0.1.6 và 0.1.7 cùng gói Core đầy đủ dự phòng. Bản dưới 0.1.6 không nằm trong phạm vi kiểm chứng cập nhật này; hãy dùng bộ cài và chọn đúng thư mục LinSub hiện tại nếu cần nâng cấp.
 
-[Hướng dẫn cài đặt](https://github.com/linsub/linsub/blob/v0.1.8/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/linsub/linsub/blob/v0.1.8/docs/user-guide.vi.md) · [Website](https://linsub.pages.dev/) · [English guide](https://github.com/linsub/linsub/blob/v0.1.8/docs/user-guide.md)
+[Hướng dẫn cài đặt](https://github.com/vulinlin03/LinSub/blob/v0.1.8/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/vulinlin03/LinSub/blob/v0.1.8/docs/user-guide.vi.md) · [Website](https://linsub.pages.dev/) · [English guide](https://github.com/vulinlin03/LinSub/blob/v0.1.8/docs/user-guide.md)
 
 ## Cập nhật trong 0.1.8
 

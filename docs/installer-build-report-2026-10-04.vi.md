@@ -10,7 +10,7 @@ Chủ dự án sau đó chọn hướng miễn phí: **không mua chứng chỉ 
 
 ## Rà soát bổ sung trước commit/push
 
-Đã xác minh tài khoản GitHub có quyền push/admin trên `LinSub/LinSub`;
+Đã xác minh tài khoản GitHub có quyền push/admin trên `vulinlin03/LinSub`;
 không đưa thông tin đăng nhập vào log, source hay artifact. Repository chưa
 có release được công bố tại thời điểm rà soát.
 

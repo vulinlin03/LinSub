@@ -31,8 +31,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://linsub.pages.dev/"
-Repository = "https://github.com/linsub/linsub"
-Issues = "https://github.com/linsub/linsub/issues"
+Repository = "https://github.com/vulinlin03/LinSub"
+Issues = "https://github.com/vulinlin03/LinSub/issues"
 
 [project.optional-dependencies]
 douyin-browser = ["playwright==1.63.0"]

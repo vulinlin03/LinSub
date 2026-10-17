@@ -178,7 +178,7 @@ class AppUpdateControllerTests(unittest.TestCase):
         controller = AppUpdateController(host)
         payload = {
             "tag_name": "v99.0.0",
-            "html_url": "https://github.com/linsub/linsub/releases/tag/v99.0.0",
+            "html_url": "https://github.com/vulinlin03/LinSub/releases/tag/v99.0.0",
             "body": "Release notes",
         }
         with patch(
@@ -246,7 +246,7 @@ class AppUpdateControllerTests(unittest.TestCase):
     @staticmethod
     def asset(data):
         name = "LinSub-99.0.0-Setup.exe"
-        return {"name": name, "browser_download_url": f"https://github.com/linsub/linsub/releases/download/v99.0.0/{name}",
+        return {"name": name, "browser_download_url": f"https://github.com/vulinlin03/LinSub/releases/download/v99.0.0/{name}",
                 "size": len(data), "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
 
     def test_verified_download_opens_installer_on_qt_thread(self):

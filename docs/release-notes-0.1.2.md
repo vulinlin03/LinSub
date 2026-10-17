@@ -4,13 +4,13 @@ Tải, dịch, tạo phụ đề và lồng tiếng video trên Windows. Hỗ tr
 
 ## Cài đặt và cập nhật
 
-**Chỉ tải và mở [LinSub-0.1.2-Setup.exe](https://github.com/linsub/linsub/releases/download/v0.1.2/LinSub-0.1.2-Setup.exe).** Các tệp Core dành cho cập nhật trong ứng dụng; tệp ThirdPartySources cung cấp mã nguồn thư viện theo giấy phép, không cần tải để sử dụng LinSub.
+**Chỉ tải và mở [LinSub-0.1.2-Setup.exe](https://github.com/vulinlin03/LinSub/releases/download/v0.1.2/LinSub-0.1.2-Setup.exe).** Các tệp Core dành cho cập nhật trong ứng dụng; tệp ThirdPartySources cung cấp mã nguồn thư viện theo giấy phép, không cần tải để sử dụng LinSub.
 
 Người đang dùng 0.1.1 có thể mở **Phiên bản mới**, chọn tải cập nhật và xác nhận khởi động lại. Dự án, cài đặt và các gói đã tải được giữ nguyên. Bạn cũng có thể đóng LinSub rồi chạy bộ cài mới vào đúng thư mục hiện tại, không cần gỡ trước.
 
 Chọn CPU hoặc GPU NVIDIA trong **Cài đặt → Chung**, sau đó cài công cụ cần dùng trong **Gói tài nguyên**. Không cần cài Python hoặc CUDA Toolkit riêng. Bộ xử lý dùng chung chỉ cần cài một lần.
 
-[Hướng dẫn cài đặt](https://github.com/linsub/linsub/blob/v0.1.2/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/linsub/linsub/blob/v0.1.2/docs/user-guide.vi.md)
+[Hướng dẫn cài đặt](https://github.com/vulinlin03/LinSub/blob/v0.1.2/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/vulinlin03/LinSub/blob/v0.1.2/docs/user-guide.vi.md)
 
 ## Giọng đọc
 
@@ -24,7 +24,7 @@ Bộ cài không ký số. Windows có thể hiện nhà phát hành không xác
 
 LinSub miễn phí theo LinSub Source-Available 1.0. **Model OmniVoice hiện tại chỉ dành cho mục đích phi thương mại.** Bạn cần quyền sử dụng video, âm nhạc và mẫu giọng nhập vào ứng dụng.
 
-[Nguồn thư viện tương ứng](https://github.com/linsub/linsub/releases/download/v0.1.2/LinSub-0.1.2-ThirdPartySources.zip) · [Thông báo và giấy phép](https://github.com/linsub/linsub/blob/v0.1.2/THIRD_PARTY_NOTICES.md).
+[Nguồn thư viện tương ứng](https://github.com/vulinlin03/LinSub/releases/download/v0.1.2/LinSub-0.1.2-ThirdPartySources.zip) · [Thông báo và giấy phép](https://github.com/vulinlin03/LinSub/blob/v0.1.2/THIRD_PARTY_NOTICES.md).
 
 ## English
 

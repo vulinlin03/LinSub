@@ -4,7 +4,7 @@
   "file": "LinSub-1.0.0-ThirdPartySources.zip",
   "sha256": "54f0c42690dcde7f1353ea0b0ae0a9da04e511d74e04824e58a0102704adfe94",
   "size": 831712752,
-  "url": "https://github.com/MachHongHai/HaizFlow/releases/download/v1.0.0/HaizFlow-1.0.0-ThirdPartySources.zip",
+  "url": "https://github.com/vulinlin03/LinSub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip",
   "files": [
     {
       "file": "ffmpeg-cli/build-msys2.sh",

@@ -4,7 +4,7 @@ Tải, dịch, tạo phụ đề và lồng tiếng video trên Windows. Hỗ tr
 
 ## Cài đặt
 
-**Chỉ tải và mở [LinSub-0.1.1-Setup.exe](https://github.com/linsub/linsub/releases/download/v0.1.1/LinSub-0.1.1-Setup.exe).** Không cần tải hoặc giải nén các tệp Core bên dưới; chúng dành cho tính năng cập nhật trong ứng dụng.
+**Chỉ tải và mở [LinSub-0.1.1-Setup.exe](https://github.com/vulinlin03/LinSub/releases/download/v0.1.1/LinSub-0.1.1-Setup.exe).** Không cần tải hoặc giải nén các tệp Core bên dưới; chúng dành cho tính năng cập nhật trong ứng dụng.
 
 1. Chọn thư mục cài trên ổ còn đủ dung lượng.
 2. Mở LinSub; giao diện mặc định là tiếng Việt. Chọn CPU hoặc GPU NVIDIA trong **Cài đặt → Chung**.
@@ -15,7 +15,7 @@ Người đang dùng 0.1.0 có thể cập nhật trong ứng dụng. Bạn cũn
 
 Gói CPU/GPU/OCR được ứng dụng tải khi bạn chọn cài; không nhúng vào bộ cài để tránh tải những gói không dùng. Bộ xử lý NVIDIA là gói lớn và dùng chung cho các công cụ GPU.
 
-[Cài đặt chi tiết](https://github.com/linsub/linsub/blob/v0.1.1/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/linsub/linsub/blob/v0.1.1/docs/user-guide.vi.md)
+[Cài đặt chi tiết](https://github.com/vulinlin03/LinSub/blob/v0.1.1/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/vulinlin03/LinSub/blob/v0.1.1/docs/user-guide.vi.md)
 
 ## Gói tài nguyên
 
@@ -29,11 +29,11 @@ Bộ cài không ký số. Windows có thể hiện nhà phát hành không xác
 
 LinSub miễn phí theo LinSub Source-Available 1.0. **Model OmniVoice hiện tại chỉ dành cho mục đích phi thương mại.** Bạn cần quyền sử dụng video, âm nhạc và mẫu giọng nhập vào ứng dụng.
 
-Các thư viện không đổi so với 0.1.0. [Nguồn thư viện tương ứng](https://github.com/linsub/linsub/releases/download/v0.1.0/LinSub-0.1.0-ThirdPartySources.zip) · [Thông báo và giấy phép](https://github.com/linsub/linsub/blob/v0.1.1/THIRD_PARTY_NOTICES.md).
+Các thư viện không đổi so với 0.1.0. [Nguồn thư viện tương ứng](https://github.com/vulinlin03/LinSub/releases/download/v0.1.0/LinSub-0.1.0-ThirdPartySources.zip) · [Thông báo và giấy phép](https://github.com/vulinlin03/LinSub/blob/v0.1.1/THIRD_PARTY_NOTICES.md).
 
 ## English
 
-**Download and run [LinSub-0.1.1-Setup.exe](https://github.com/linsub/linsub/releases/download/v0.1.1/LinSub-0.1.1-Setup.exe) only.** Core files below are for in-app updates, not manual installation. Existing 0.1.0 users can update in the app or close LinSub and run Setup over their installation; existing data is retained.
+**Download and run [LinSub-0.1.1-Setup.exe](https://github.com/vulinlin03/LinSub/releases/download/v0.1.1/LinSub-0.1.1-Setup.exe) only.** Core files below are for in-app updates, not manual installation. Existing 0.1.0 users can update in the app or close LinSub and run Setup over their installation; existing data is retained.
 
 Choose CPU/NVIDIA GPU in Settings, then install the resources you need. Downloads, verification and installation have separate status feedback. Pause retains partial downloads; Resume continues the installation. Shared runtimes are installed once.
 

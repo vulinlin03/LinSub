@@ -2,7 +2,7 @@
   <img src="src/linsub/desktop/assets/branding/linsub-mark.png" width="96" alt="Logo LinSub">
   <h1>LinSub</h1>
   <p><strong>Ứng dụng miễn phí để tải, dịch, tạo phụ đề và lồng tiếng video trên Windows.</strong></p>
-  <p><a href="https://github.com/linsub/linsub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe">Cài đặt</a> · <a href="docs/user-guide.vi.md">Hướng dẫn sử dụng</a> · <a href="docs/support.vi.md">Trợ giúp</a> · <a href="README.md">English</a></p>
+  <p><a href="https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe">Cài đặt</a> · <a href="docs/user-guide.vi.md">Hướng dẫn sử dụng</a> · <a href="docs/support.vi.md">Trợ giúp</a> · <a href="README.md">English</a></p>
 </div>
 
 ## Giới thiệu
@@ -81,7 +81,7 @@ Gemini, Zernio và các dịch vụ bên ngoài có điều khoản, hạn mức
 
 ## Cài đặt và bắt đầu
 
-**[Tải bộ cài Windows](https://github.com/linsub/linsub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe).** Chỉ mở file EXE này; không cần tải hoặc giải nén các tệp Core. Gói tài nguyên được cài trong LinSub. Bản 1.0.0 có thể cập nhật trực tiếp trong app. [Thông tin phiên bản và cài đặt](https://github.com/linsub/linsub/releases/latest).
+**[Tải bộ cài Windows](https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe).** Chỉ mở file EXE này; không cần tải hoặc giải nén các tệp Core. Gói tài nguyên được cài trong LinSub. Bản 1.0.0 có thể cập nhật trực tiếp trong app. [Thông tin phiên bản và cài đặt](https://github.com/vulinlin03/LinSub/releases/latest).
 
 1. Cài và mở LinSub. Giao diện mặc định là tiếng Việt.
 2. Chọn CPU hoặc GPU NVIDIA trong **Cài đặt → Chung** và cài các gói cần dùng trong **Gói tài nguyên**.
@@ -102,12 +102,12 @@ LinSub miễn phí sử dụng theo [LinSub Source-Available 1.0](LICENSE). Đâ
 
 Bạn cần có quyền sử dụng video, nhạc và mẫu giọng được đưa vào ứng dụng. Xem [NOTICE](NOTICE) và [thông báo thành phần bên thứ ba](THIRD_PARTY_NOTICES.md). [Hồ sơ giấy phép](docs/licensing-review.md) và [dự thảo không có hiệu lực](legal/LICENSE-SOURCE-AVAILABLE-DRAFT.md) được lưu riêng.
 
-Ứng dụng dùng Qt/PySide theo LGPL và FFmpeg theo GPL/LGPL, tùy thành phần. [Nguồn thư viện đi kèm](https://github.com/linsub/linsub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip) và [hướng dẫn thay thư viện](docs/third-party-library-replacement.md) được cung cấp riêng; quyền theo giấy phép của các thư viện vẫn được giữ nguyên.
+Ứng dụng dùng Qt/PySide theo LGPL và FFmpeg theo GPL/LGPL, tùy thành phần. [Nguồn thư viện đi kèm](https://github.com/vulinlin03/LinSub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip) và [hướng dẫn thay thư viện](docs/third-party-library-replacement.md) được cung cấp riêng; quyền theo giấy phép của các thư viện vẫn được giữ nguyên.
 
 ## Hỗ trợ và đóng góp
 
-Xem [Trợ giúp](docs/support.vi.md) để quản lý tài nguyên, API key và dữ liệu. Bạn cũng có thể [gửi góp ý hoặc yêu cầu hỗ trợ](https://github.com/linsub/linsub/issues). Không gửi API key hoặc dữ liệu riêng tư.
+Xem [Trợ giúp](docs/support.vi.md) để quản lý tài nguyên, API key và dữ liệu. Bạn cũng có thể [gửi góp ý hoặc yêu cầu hỗ trợ](https://github.com/vulinlin03/LinSub/issues). Không gửi API key hoặc dữ liệu riêng tư.
 
 Phần cài đặt từ mã nguồn, kiểm thử và đóng gói nằm trong [hướng dẫn phát triển](docs/development.vi.md). Xem [tài liệu kỹ thuật](docs/README.vi.md) nếu bạn muốn đóng góp mã.
 
-LinSub do **LinSub Team** phát triển. Bạn có thể [đánh dấu sao repository](https://github.com/linsub/linsub) để theo dõi dự án.
+LinSub do **LinSub Team** phát triển. Bạn có thể [đánh dấu sao repository](https://github.com/vulinlin03/LinSub) để theo dõi dự án.

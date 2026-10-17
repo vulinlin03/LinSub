@@ -2,7 +2,7 @@
   <img src="src/linsub/desktop/assets/branding/linsub-mark.png" width="96" alt="LinSub logo">
   <h1>LinSub</h1>
   <p><strong>A free Windows app for downloading, translating, subtitling and dubbing videos.</strong></p>
-  <p><a href="https://github.com/linsub/linsub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe">Installation</a> · <a href="docs/user-guide.md">User guide</a> · <a href="docs/support.md">Help</a> · <a href="README.vi.md">Tiếng Việt</a></p>
+  <p><a href="https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe">Installation</a> · <a href="docs/user-guide.md">User guide</a> · <a href="docs/support.md">Help</a> · <a href="README.vi.md">Tiếng Việt</a></p>
 </div>
 
 ## About LinSub
@@ -81,7 +81,7 @@ Gemini, Zernio and other external services have their own terms, limits and char
 
 ## Install and get started
 
-**[Download the Windows installer](https://github.com/linsub/linsub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe).** Run this EXE only; do not download or extract Core files. Resource packs are installed inside LinSub. Version 1.0.0 can update directly in the app. [Release and installation details](https://github.com/linsub/linsub/releases/latest).
+**[Download the Windows installer](https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe).** Run this EXE only; do not download or extract Core files. Resource packs are installed inside LinSub. Version 1.0.0 can update directly in the app. [Release and installation details](https://github.com/vulinlin03/LinSub/releases/latest).
 
 1. Install and open LinSub. Vietnamese is the default; English is available in Settings.
 2. Choose CPU or NVIDIA GPU in **Settings → General**, then install the resource packs you need.
@@ -102,12 +102,12 @@ LinSub is free to use under [LinSub Source-Available 1.0](LICENSE). This is not 
 
 You need permission to use imported video, music and voice samples. See [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md). The [licensing review](docs/licensing-review.md) and [inactive draft terms](legal/LICENSE-SOURCE-AVAILABLE-DRAFT.md) are retained separately.
 
-LinSub uses Qt/PySide under LGPL and FFmpeg under GPL/LGPL, depending on the component. [Bundled library sources](https://github.com/linsub/linsub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip) and [library replacement instructions](docs/third-party-library-replacement.md) are provided separately. Independent library-license rights remain available.
+LinSub uses Qt/PySide under LGPL and FFmpeg under GPL/LGPL, depending on the component. [Bundled library sources](https://github.com/vulinlin03/LinSub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip) and [library replacement instructions](docs/third-party-library-replacement.md) are provided separately. Independent library-license rights remain available.
 
 ## Support and contributions
 
-See [Help](docs/support.md) for resources, API keys and data management. You can also [send feedback or request support](https://github.com/linsub/linsub/issues). Never include keys or private data.
+See [Help](docs/support.md) for resources, API keys and data management. You can also [send feedback or request support](https://github.com/vulinlin03/LinSub/issues). Never include keys or private data.
 
 Source installation, testing and packaging are covered in the [development guide](docs/development.md). See the [technical documentation](docs/README.md) to contribute code.
 
-Created by **LinSub Team**. [Star the repository](https://github.com/linsub/linsub) to follow the project.
+Created by **LinSub Team**. [Star the repository](https://github.com/vulinlin03/LinSub) to follow the project.

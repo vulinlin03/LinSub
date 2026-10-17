@@ -8,7 +8,7 @@ This earlier proposal is retained for comparison, not application terms.
 Proposed identifier: `LicenseRef-LinSub-Source-Available-1.0` (custom; not
 OSI-approved). Proposed licensor: LinSub Team, only for rights he owns or is
 expressly authorized to license. Official repository:
-https://github.com/linsub/linsub. Contact: support@linsub.com.
+https://github.com/vulinlin03/LinSub. Contact: vulinlin03@gmail.com.
 
 ## 1. Scope and precedence
 

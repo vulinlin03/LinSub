@@ -41,7 +41,7 @@
 
 #define AppName "LinSub"
 #define AppPublisher "LinSub Team"
-#define AppUrl "https://github.com/linsub/linsub"
+#define AppUrl "https://github.com/vulinlin03/LinSub"
 #ifndef VersionedLayout
   #define VersionedLayout "0"
 #endif

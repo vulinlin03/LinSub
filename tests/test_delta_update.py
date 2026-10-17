@@ -432,7 +432,7 @@ class Response(BytesIO):
 
 class DownloadTests(unittest.TestCase):
     def test_official_public_release_requires_stable_tag_repo(self):
-        payload = {"tag_name": "v0.2.0", "html_url": "https://github.com/linsub/linsub/releases/tag/v0.2.0",
+        payload = {"tag_name": "v0.2.0", "html_url": "https://github.com/vulinlin03/LinSub/releases/tag/v0.2.0",
                    "draft": False, "prerelease": False, "assets": []}
         for changes in ({}, {"draft": True}, {"tag_name": "v0.2.0-rc1"}, {"html_url": "https://github.com/other/repo/releases/tag/v0.2.0"}):
             client = GitHubClient(opener=lambda *_args, **_kwargs: Response(json.dumps(dict(payload, **changes)).encode(), API))
@@ -447,13 +447,13 @@ class DownloadTests(unittest.TestCase):
                     "https://github.com@evil.invalid/file"):
             with self.subTest(url=url), self.assertRaises(UpdateError):
                 allowed_url(url)
-        request = __import__("urllib.request", fromlist=["Request"]).Request("https://github.com/linsub/linsub/releases/download/v0.2.0/file.zip")
+        request = __import__("urllib.request", fromlist=["Request"]).Request("https://github.com/vulinlin03/LinSub/releases/download/v0.2.0/file.zip")
         with self.assertRaises(UpdateError):
             RedirectPolicy().redirect_request(request, None, 302, "Found", {}, "https://evil.invalid/a")
 
     def test_partial_and_wrong_digest_downloads_never_publish(self):
         data = b"package"
-        asset = {"name": "file.zip", "url": "https://github.com/linsub/linsub/releases/download/v0.2.0/file.zip",
+        asset = {"name": "file.zip", "url": "https://github.com/vulinlin03/LinSub/releases/download/v0.2.0/file.zip",
                  "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
         with tempfile.TemporaryDirectory() as directory:
             for body in (b"half", b"wrong!!"):
@@ -470,7 +470,7 @@ class DownloadTests(unittest.TestCase):
     def test_asset_missing_digest_or_wrong_repo_is_rejected(self):
         name = "LinSub-Core-0.2.0-windows-x64-full.zip"
         asset = {"name": name, "size": 1, "state": "uploaded", "digest": "sha256:" + "1" * 64,
-                 "browser_download_url": "https://github.com/linsub/linsub/releases/download/v0.2.0/" + name}
+                 "browser_download_url": "https://github.com/vulinlin03/LinSub/releases/download/v0.2.0/" + name}
         client = GitHubClient()
         for changes in ({"digest": None}, {"size": -1}, {"state": "new"}, {"browser_download_url": "https://evil.invalid/file"}):
             with self.assertRaises(UpdateError):

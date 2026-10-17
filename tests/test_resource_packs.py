@@ -152,7 +152,7 @@ class ResourcePackManifestTests(unittest.TestCase):
                     "--archive",
                     str(archive),
                     "--url",
-                    "https://github.com/linsub/linsub/releases/download/v2/engine.zip",
+                    "https://github.com/vulinlin03/LinSub/releases/download/v2/engine.zip",
                 ],
             ):
                 self.assertEqual(finalize_pack.main(), 0)

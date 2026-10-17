@@ -43,7 +43,7 @@ Bộ cài hiện không ký số. Windows có thể hiển thị nhà phát hàn
 
 ## Liên hệ hỗ trợ
 
-Tạo yêu cầu tại [GitHub Issues](https://github.com/linsub/linsub/issues), kèm:
+Tạo yêu cầu tại [GitHub Issues](https://github.com/vulinlin03/LinSub/issues), kèm:
 
 1. Phiên bản LinSub và Windows.
 2. Các bước thực hiện và tên công cụ/model.

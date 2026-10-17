@@ -21,6 +21,6 @@ Windows 10 1809 trở lên hoặc Windows 11 x64; RAM hệ thống từ 16 GB. C
 
 Bộ cài chưa có chữ ký số. Chính sách bảo mật Windows hoặc của tổ chức có thể hạn chế chạy EXE/DLL chưa được tin cậy; cập nhật không thay đổi các chính sách này.
 
-[Hướng dẫn cài đặt](https://github.com/linsub/linsub/blob/main/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/linsub/linsub/blob/main/docs/user-guide.vi.md) · [Thông tin LinSub](https://linsub.pages.dev/)
+[Hướng dẫn cài đặt](https://github.com/vulinlin03/LinSub/blob/main/docs/install.vi.md) · [Hướng dẫn sử dụng](https://github.com/vulinlin03/LinSub/blob/main/docs/user-guide.vi.md) · [Thông tin LinSub](https://linsub.pages.dev/)
 
 OmniVoice có giới hạn phi thương mại theo giấy phép checkpoint. Xem điều khoản đi kèm ứng dụng trước khi sử dụng.

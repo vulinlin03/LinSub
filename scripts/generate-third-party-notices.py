@@ -229,7 +229,7 @@ def generate(
         lines.extend(
             [
                 "| LinSub inference engine launcher | Bundled | LinSub Source-Available 1.0 | "
-                "https://github.com/linsub/linsub |",
+                "https://github.com/vulinlin03/LinSub |",
                 "",
                 "Model checkpoints are distributed as separate checksum-pinned packs and are not "
                 "included in this engine archive.",

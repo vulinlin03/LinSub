@@ -5,8 +5,8 @@
     "engine-cpu-py313": {
       "version": "15",
       "url": "https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/engine-cpu-py313-15.zip",
-      "sha256": "32d059345affdfa8342ae21d7698ae89e73ecb5fc0755e29a72aafae7cd1a804",
-      "download_size": 357873929,
+      "sha256": "d8d891109cba14432a621f5030bdcdf39f07fec0e58c22c054b4d21de4ece542",
+      "download_size": 363149647,
       "installed_size": 880059161
     },
     "engine-cuda128-py313": {
@@ -17,12 +17,12 @@
       "installed_size": 5098269501,
       "parts": [
         {
-          "url": "https://github.com/MachHongHai/HaizFlow/releases/download/v1.0.1/engine-cuda128-py313-17.zip.001",
+          "url": "https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/engine-cuda128-py313-17.zip.001",
           "size": 1610612736,
           "sha256": "4fd8897ad4d233f763aca39416a013a0e8de429f88f3a7a85d1a94d8699db63e"
         },
         {
-          "url": "https://github.com/MachHongHai/HaizFlow/releases/download/v1.0.1/engine-cuda128-py313-17.zip.002",
+          "url": "https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/engine-cuda128-py313-17.zip.002",
           "size": 1585980663,
           "sha256": "0f5f66e424a7e395d94a8a279ef2b28ed6705d8e412863b3ede3e411d2e93b3e"
         }
@@ -31,8 +31,8 @@
     "engine-vision-onnx": {
       "version": "7",
       "url": "https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/engine-vision-onnx-7.zip",
-      "sha256": "bce0e94fd404851a54fbbda8b8961e977c0af4ee2a1f8baaf0e905d16f6757d9",
-      "download_size": 92419508,
+      "sha256": "fb29396c08fe1c588009c82abd8e1699c6fa72e6a1b97eb58ec5b297b0e75cdd",
+      "download_size": 94902380,
       "installed_size": 232682503
     }
   }

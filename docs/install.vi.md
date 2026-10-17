@@ -14,7 +14,7 @@ Chọn ổ còn đủ chỗ cho ứng dụng, tài nguyên, video nguồn và vi
 
 ## 2. Cài ứng dụng
 
-**[Tải LinSub-0.1.10-Setup.exe](https://github.com/linsub/linsub/releases/download/v0.1.10/LinSub-0.1.10-Setup.exe).** Đây là file duy nhất bạn cần để cài ứng dụng. Các tệp Core ở [trang phiên bản](https://github.com/linsub/linsub/releases/latest) dành cho cập nhật tự động; không tải hoặc giải nén chúng để cài.
+**[Tải LinSub-0.1.10-Setup.exe](https://github.com/vulinlin03/LinSub/releases/download/v0.1.10/LinSub-0.1.10-Setup.exe).** Đây là file duy nhất bạn cần để cài ứng dụng. Các tệp Core ở [trang phiên bản](https://github.com/vulinlin03/LinSub/releases/latest) dành cho cập nhật tự động; không tải hoặc giải nén chúng để cài.
 
 1. Mở tệp **Setup.exe**, chọn ngôn ngữ và đọc điều kiện sử dụng.
 2. Chọn thư mục cài. Có thể dùng ổ D hoặc ổ khác còn đủ chỗ.

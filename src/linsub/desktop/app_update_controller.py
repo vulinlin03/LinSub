@@ -27,7 +27,6 @@ _RELEASE_URL_PREFIX = "https://github.com/vulinlin03/LinSub/releases/"
 _DOWNLOAD_URL_PREFIX = _RELEASE_URL_PREFIX + "download/"
 _DOWNLOAD_URL_PREFIXES = (
     _DOWNLOAD_URL_PREFIX,
-    "https://github.com/linsub/linsub/releases/download/",
 )
 
 
@@ -393,10 +392,10 @@ class AppUpdateController(QObject):
                         payload = json.loads(response.read(512 * 1024).decode("utf-8"))
                 if not isinstance(payload, dict):
                     raise ValueError("Invalid release metadata.")
-                tag = str(payload.get("tag_name") or "").strip()
                 url = str(payload.get("html_url") or "").strip()
-                if not any(url.lower().startswith(prefix.lower()) for prefix in (_RELEASE_URL_PREFIX, "https://github.com/linsub/linsub/releases/")):
+                if not url.startswith(_RELEASE_URL_PREFIX):
                     raise ValueError("GitHub returned an unexpected release address.")
+                tag = str(payload.get("tag_name") or "").strip()
                 available = version_key(tag) > version_key(self.current_version)
                 self._events.put(
                     {

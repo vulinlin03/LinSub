@@ -14,7 +14,7 @@ Allow space for the app, packs, source videos and exports. Setup shows the requi
 
 ## 2. Install the app
 
-**[Download LinSub-0.1.10-Setup.exe](https://github.com/linsub/linsub/releases/download/v0.1.10/LinSub-0.1.10-Setup.exe).** This is the only file you need to install the app. Core files on the [release page](https://github.com/linsub/linsub/releases/latest) are for automatic updates; do not download or extract them for installation.
+**[Download LinSub-0.1.10-Setup.exe](https://github.com/vulinlin03/LinSub/releases/download/v0.1.10/LinSub-0.1.10-Setup.exe).** This is the only file you need to install the app. Core files on the [release page](https://github.com/vulinlin03/LinSub/releases/latest) are for automatic updates; do not download or extract them for installation.
 
 1. Open **Setup.exe**, select the language and read the terms.
 2. Choose an installation folder on a drive with enough free space.

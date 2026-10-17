@@ -1,6 +1,6 @@
 # LinSub 1.0.1
 
-[Tải bộ cài Windows](https://github.com/linsub/linsub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe)
+[Tải bộ cài Windows](https://github.com/vulinlin03/LinSub/releases/download/v1.0.1/LinSub-1.0.1-Setup.exe)
 
 ## Sửa lỗi và cải thiện
 
@@ -23,6 +23,6 @@ Mở **Phiên bản mới → Cập nhật** để nâng trực tiếp từ **1.
 
 Sau cập nhật, mở **Gói tài nguyên** và cập nhật **bộ xử lý CPU/CUDA** khi app yêu cầu. Các sửa lưu điểm nhận dạng và xử lý nằm cả trong bộ xử lý mới, không chỉ Core. Gói OCR/model không cần tải lại nếu vẫn hợp lệ. Điểm lưu chi tiết mới được tạo bởi lượt chạy dùng bản sửa; không thể khôi phục bước mà phiên bản cũ chưa từng lưu.
 
-Các thư viện và codec không thay đổi so với 1.0.0; [nguồn thư viện tương ứng](https://github.com/linsub/linsub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip) tiếp tục được cung cấp ở release 1.0.0.
+Các thư viện và codec không thay đổi so với 1.0.0; [nguồn thư viện tương ứng](https://github.com/vulinlin03/LinSub/releases/download/v1.0.0/LinSub-1.0.0-ThirdPartySources.zip) tiếp tục được cung cấp ở release 1.0.0.
 
 Windows x64. Bản Windows **chưa ký Authenticode**; Windows có thể cảnh báo hoặc chặn theo chính sách. Không tắt phần mềm bảo vệ. Kiểm thử cục bộ/frozen không thay thế mọi cấu hình Windows hoặc điều kiện mạng thực tế. Các giới hạn giấy phép model, bao gồm checkpoint OmniVoice phi thương mại, vẫn áp dụng.
