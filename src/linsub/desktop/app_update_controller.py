@@ -364,6 +364,12 @@ class AppUpdateController(QObject):
                 except OSError:
                     pass
 
+    def _safe_emit_changed(self) -> None:
+        try:
+            self.changed.emit()
+        except RuntimeError:
+            pass
+
     def check(self, *, manual: bool = False) -> None:
         if self._state in {"downloading", "verifying", "installing", "preparing", "ready", "restarting"}:
             return
@@ -373,7 +379,7 @@ class AppUpdateController(QObject):
         self._manual_request = bool(manual)
         self._state = "checking"
         self._error = ""
-        self.changed.emit()
+        self._safe_emit_changed()
 
         def worker() -> None:
             try:

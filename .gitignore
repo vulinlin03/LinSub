@@ -27,6 +27,7 @@ runtime/bin/
 runtime/compliance/
 runtime/engines/
 runtime/packages/
+runtime/cache/
 **/bin/*.exe
 **/bin/ollama/
 *.exe

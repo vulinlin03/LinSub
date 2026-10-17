@@ -1063,6 +1063,11 @@ class ResourcePackManager:
                 "MODELS_DIR": str(smoke_root / "models"),
                 "LINSUB_TMP_DIR": str(smoke_root / "tmp"),
                 "LINSUB_SMOKE_TEST": "1",
+                "HAIZFLOW_HOME": smoke,
+                "HAIZFLOW_ENGINE_APP_ROOT": str(install_root()),
+                "HAIZFLOW_INSTALL_ROOT": str(install_root()),
+                "HAIZFLOW_SMOKE_TEST": "1",
+                "HAIZFLOW_TMP_DIR": str(smoke_root / "tmp"),
             })
             process = subprocess.Popen(
                 [str(executable), *command[1:]],
