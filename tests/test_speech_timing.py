@@ -105,3 +105,25 @@ class SpeechTimingTests(unittest.TestCase):
         self.assertFalse(is_clause_continuation("Tôi đi chợ.", "Tôi mua cá"))
         # Two distinct statements starting with capital -> False
         self.assertFalse(is_clause_continuation("Xin chào", "Thế giới"))
+
+    def test_fit_speech_to_natural_cadence(self):
+        import tempfile
+        from pydub.generators import Sine
+        from linsub.pipeline.audio_timeline import fit_speech_to_natural_cadence
+        from linsub.utils.audio import AudioSegment
+
+        # Synthesize a multi-clause utterance: 600ms tone + 120ms pause + 700ms tone = 1420ms
+        clause1 = Sine(300).to_audio_segment(duration=600).set_frame_rate(48000).set_channels(1)
+        pause = AudioSegment.silent(duration=120, frame_rate=48000)
+        clause2 = Sine(300).to_audio_segment(duration=700).set_frame_rate(48000).set_channels(1)
+        audio = clause1 + pause + clause2
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Slot duration is 4000ms: short audio (1420ms) should elastically expand internal pause & add lead-in
+            fitted = fit_speech_to_natural_cadence(
+                audio, 1000, 5000, 6000, 10000, temp_dir, "test"
+            )
+            # Resulting duration should comfortably occupy 75% - 90% of the 4000ms slot
+            self.assertGreaterEqual(len(fitted), int(4000 * 0.75))
+            self.assertLessEqual(len(fitted), 4000 - 70)
+

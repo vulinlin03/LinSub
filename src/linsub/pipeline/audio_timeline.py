@@ -286,6 +286,104 @@ def trim_silence(audio: AudioSegment, silence_threshold_db: float = -50.0) -> Au
     return audio
 
 
+def fit_speech_to_natural_cadence(
+    audio: AudioSegment,
+    start_ms: int,
+    segment_end_ms: int,
+    next_start_ms: int,
+    video_dur_ms: int,
+    temp_dir: str,
+    cancellation_id: str,
+    *,
+    is_last: bool = False,
+) -> AudioSegment:
+    """Adapt synthesized speech to natural cinematic dialogue cadence.
+
+    1. Overrun handling:
+       - Uses pitch-preserving atempo to fit speech into the dialogue window,
+         extending up to 400-500ms into the idle gap before the next speaker,
+         capped at 1.28x max speed to preserve human voice quality.
+    2. Underrun & dramatic pacing handling:
+       - In human dubbing (especially anime/manhua narration and drama), dialogue
+         is delivered in distinct clauses separated by dramatic pauses.
+       - When TTS finishes in less than ~78% of the video slot, internal clause
+         silences are elastically expanded (up to 1500ms per pause).
+       - If speech is rushed (<55% of slot), gentle tempo relaxation (0.88x) is
+         applied to the clauses so the speaker sounds dignified and articulate.
+       - A natural lead-in offset (120-280ms) is prepended so speech aligns with
+         the actor's mouth movement / visual cut instead of firing abruptly at 0ms.
+    """
+    audio = trim_silence(audio)
+    if len(audio) <= 0:
+        return audio
+
+    source_end = segment_end_ms if segment_end_ms > start_ms else next_start_ms
+    source_dur = max(1, source_end - start_ms)
+    hard_limit = video_dur_ms
+    if is_last and hard_limit - start_ms > _FINAL_AUDIO_TAIL_MARGIN_MS * 2:
+        hard_limit -= _FINAL_AUDIO_TAIL_MARGIN_MS
+    if next_start_ms > start_ms:
+        hard_limit = min(hard_limit, next_start_ms)
+
+    safety_margin_ms = 70
+    max_room = max(1, hard_limit - start_ms - safety_margin_ms)
+
+    # Overrun: needs compression to avoid colliding with next speaker
+    if len(audio) > source_dur:
+        target_dur, speed = calculate_speech_fitting_window(
+            start_ms, segment_end_ms, next_start_ms, video_dur_ms, len(audio), is_last=is_last
+        )
+        if abs(speed - 1.0) > 0.02 or len(audio) > target_dur:
+            audio = fit_tempo_to_duration(audio, target_dur, temp_dir, cancellation_id)
+        return audio[:max_room]
+
+    # Underrun: speech fits well within actor's window
+    # When line is significantly shorter than the scene (> 1.8s slot), apply elastic expansion
+    if len(audio) < source_dur * 0.78 and source_dur >= 1800:
+        from pydub.silence import split_on_silence
+
+        chunks = split_on_silence(audio, min_silence_len=85, silence_thresh=-40.0, keep_silence=30)
+        target_span = min(max_room, int(source_dur * 0.85))
+
+        if len(chunks) > 1:
+            # We have multiple clauses
+            if len(audio) < source_dur * 0.55:
+                relaxed_chunks = []
+                for c in chunks:
+                    if len(c) >= 120:
+                        c_relaxed = fit_tempo_to_duration(
+                            c, int(len(c) / 0.88), temp_dir, cancellation_id, allow_slowdown=True
+                        )
+                        relaxed_chunks.append(c_relaxed)
+                    else:
+                        relaxed_chunks.append(c)
+                chunks = relaxed_chunks
+            speech_dur = sum(len(c) for c in chunks)
+            remaining_silence = max(0, target_span - speech_dur)
+            pause_len = min(1500, max(220, remaining_silence // (len(chunks) - 1)))
+            expanded = AudioSegment.empty()
+            for i, chunk in enumerate(chunks):
+                if i > 0:
+                    expanded += AudioSegment.silent(duration=pause_len, frame_rate=audio.frame_rate)
+                expanded += chunk
+            audio = expanded
+        else:
+            # Single clause
+            if len(audio) < source_dur * 0.60 and source_dur >= 2000:
+                target_dur = min(source_dur, int(len(audio) / 0.85))
+                audio = fit_tempo_to_duration(audio, target_dur, temp_dir, cancellation_id, allow_slowdown=True)
+
+        remaining_gap = source_dur - len(audio)
+        if remaining_gap > 300:
+            lead_in = min(280, max(120, remaining_gap // 4))
+            audio = AudioSegment.silent(duration=lead_in, frame_rate=audio.frame_rate) + audio
+
+    if len(audio) > max_room:
+        audio = audio[:max_room]
+    return audio
+
+
+
 def _atempo_filters(speed_factor: float) -> str:
     """Build a quality-preserving FFmpeg tempo chain for any required speed."""
     speed_factor = max(0.01, float(speed_factor))
@@ -651,34 +749,20 @@ def build_audio_timeline(
         try:
             check_cancellation(cancellation_id)
             tts_segment = AudioSegment.from_file(part_path)
-            # Trim leading/trailing silence from the generated TTS audio to remove delay/gaps
-            tts_segment = trim_silence(tts_segment)
             clip_volume = int(seg.get("_voice_volume_percent", tts_volume))
             tts_segment = _apply_volume(tts_segment, clip_volume, "TTS", video_id)
-            tts_dur = len(tts_segment)
             
-            # Fit speech using human-dialogue pacing with pitch-preserving tempo
-            target_dur, speed_factor = calculate_speech_fitting_window(
+            # Fit speech using human-dialogue cadence with pause expansion & pitch-preserving tempo
+            tts_segment = fit_speech_to_natural_cadence(
+                tts_segment,
                 start_ms,
                 segment_end_ms,
                 next_start_ms,
                 video_dur_ms,
-                tts_dur,
+                voice_parts_dir,
+                cancellation_id,
                 is_last=idx == total,
             )
-            if abs(speed_factor - 1.0) > 0.02 or tts_dur > target_dur:
-                log_to_video(
-                    video_id,
-                    f"[{idx}/{total}] Fitting TTS to {target_dur}ms natural speech window. "
-                    f"Applying pitch-preserving tempo {speed_factor:.2f}x without trimming.",
-                )
-                tts_segment = fit_tempo_to_duration(
-                    tts_segment,
-                    target_dur,
-                    voice_parts_dir,
-                    cancellation_id,
-                    allow_slowdown=(speed_factor < 0.99),
-                )
 
             tts_segment = _fade_clip(
                 tts_segment,

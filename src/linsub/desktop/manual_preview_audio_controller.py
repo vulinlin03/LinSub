@@ -379,7 +379,7 @@ class ManualPreviewAudioController(QObject):
                 return self._cache[key]
         cache_path = None
         if self._pcm_cache_directory is not None:
-            digest = hashlib.sha256(json.dumps((key, "pcm-stereo-48k-fit-v2"), default=str).encode()).hexdigest()
+            digest = hashlib.sha256(json.dumps((key, "pcm-stereo-48k-fit-v3"), default=str).encode()).hexdigest()
             cache_path = self._pcm_cache_directory / f"{digest}.pcm"
             if cache_path.is_file() and cache_path.stat().st_size > 0 and cache_path.stat().st_size % 4 == 0:
                 samples = self._map_pcm(cache_path, persistent=True)
@@ -392,25 +392,40 @@ class ManualPreviewAudioController(QObject):
         command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(path), "-vn"]
         if duration is not None:
             try:
-                from linsub.pipeline.audio_timeline import _atempo_filters, calculate_speech_fitting_window, trim_silence
+                from linsub.pipeline.audio_timeline import (
+                    _atempo_filters,
+                    calculate_speech_fitting_window,
+                    fit_speech_to_natural_cadence,
+                    trim_silence,
+                )
                 from linsub.utils.audio import AudioSegment
                 audio = trim_silence(AudioSegment.from_file(path))
-                if start is not None and next_start is not None:
-                    target, speed = calculate_speech_fitting_window(
-                        start, end or (start + duration), next_start, video_end or (start + duration), len(audio)
-                    )
-                else:
-                    from linsub.pipeline.speech_timing import fitted_speech_duration_ms
-
-                    target = max(1, fitted_speech_duration_ms(len(audio), duration))
-                    speed = len(audio) / target
                 with tempfile.TemporaryDirectory(prefix="linsub-preview-voice-", dir=TMP_DIR) as work:
+                    if start is not None and next_start is not None:
+                        audio = fit_speech_to_natural_cadence(
+                            audio,
+                            start,
+                            end or (start + duration),
+                            next_start,
+                            video_end or (start + duration),
+                            work,
+                            str(generation),
+                        )
+                    else:
+                        from linsub.pipeline.speech_timing import fitted_speech_duration_ms
+
+                        target = max(1, fitted_speech_duration_ms(len(audio), duration))
+                        if len(audio) > target:
+                            from linsub.pipeline.audio_timeline import fit_tempo_to_duration
+                            audio = fit_tempo_to_duration(audio, target, work, str(generation))
+
                     source = Path(work) / "voice.wav"
                     audio.export(source, format="wav").close()
-                    command = [_binary("ffmpeg"), "-v", "error", "-threads", "2", "-i", str(source)]
-                    if abs(speed - 1.0) > 0.02 or len(audio) > target:
-                        command += ["-af", _atempo_filters(speed)]
-                    command += ["-t", str(target / 1000), "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"]
+                    command = [
+                        _binary("ffmpeg"), "-v", "error", "-threads", "2",
+                        "-i", str(source),
+                        "-ac", "2", "-ar", str(RATE), "-f", "s16le", "-"
+                    ]
                     samples = self._decode_to_pcm(command, generation, cache_path)
             except Exception as decode_exc:
                 _LOG.warning("Falling back to direct ffmpeg decoding for %s: %s", path, decode_exc)
