@@ -79,10 +79,7 @@ class AudioPreviewControllerTests(unittest.TestCase):
         self.assertEqual({path.stem for path in packaged_audio}, set(languages))
         self.assertEqual(
             manifest["sentences"]["vi"],
-            "Ứng dụng được phát triển bởi LinSub Team, một sinh viên Đại học Kinh tế "
-            "Thành phố Hồ Chí Minh, nếu bạn thích ứng dụng này, hãy vào phần liên hệ và gửi "
-            "tặng một sao cho repository Github ứng dụng này. Cảm ơn bạn rất nhiều vì đã sử "
-            "dụng ứng dụng của tôi, chúc bạn một ngày mới tốt lành.",
+            "Xin chào, đây là giọng đọc thử nghiệm trên ứng dụng LinSub. Chúc bạn có những trải nghiệm tuyệt vời cùng chúng tôi.",
         )
 
     def test_all_edge_voices_have_exact_offline_samples_and_decode_completely(self):

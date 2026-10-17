@@ -2,9 +2,9 @@
   "schema_version": 1,
   "description": "Prerecorded, sentence-locked voice-library samples. Runtime preview never invokes a TTS model or reuses another project's dialogue.",
   "sentences": {
-    "vi": "Ứng dụng được phát triển bởi LinSub Team, một sinh viên Đại học Kinh tế Thành phố Hồ Chí Minh, nếu bạn thích ứng dụng này, hãy vào phần liên hệ và gửi tặng một sao cho repository Github ứng dụng này. Cảm ơn bạn rất nhiều vì đã sử dụng ứng dụng của tôi, chúc bạn một ngày mới tốt lành.",
-    "en": "This app was developed by LinSub Team, a student at the University of Economics Ho Chi Minh City. If you like this app, please visit the contact section and give its GitHub repository a star. Thank you very much for using my app. Have a wonderful day.",
-    "zh": "这款应用由胡志明市经济大学的学生 LinSub Team 开发。如果您喜欢这款应用，请前往联系方式页面，在 GitHub 仓库点一颗星。非常感谢您使用我的应用，祝您度过美好的一天。"
+    "vi": "Xin chào, đây là giọng đọc thử nghiệm trên ứng dụng LinSub. Chúc bạn có những trải nghiệm tuyệt vời cùng chúng tôi.",
+    "en": "Hello, this is a sample voice on the LinSub application. Have a wonderful day.",
+    "zh": "您好，这是 LinSub 应用程序上的试听语音。祝您度过愉快的一天。"
   },
   "samples": [
     {
@@ -12,882 +12,1134 @@
       "voice": "omnivoice:female",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female/vi.mp3"
+      "path": "omnivoice/omnivoice_female/vi.mp3",
+      "bytes": 45792,
+      "sha256": "b6b2f8295ea145e99a277f7df222f1625a63d8ad319066472863bf6a4ad6afac"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male/vi.mp3"
+      "path": "omnivoice/omnivoice_male/vi.mp3",
+      "bytes": 44352,
+      "sha256": "ccf5a2979d7fdc1be7665e952a7bd436e904bc23b260fb7b6adf5de4d03f8298"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_low",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_low/vi.mp3"
+      "path": "omnivoice/omnivoice_female_low/vi.mp3",
+      "bytes": 45648,
+      "sha256": "00aea74b27ab70bbb2b265f1adf7ce0af6b1afac249b4ee5140a0cb49758f37c"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:deep",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_deep/vi.mp3"
+      "path": "omnivoice/omnivoice_deep/vi.mp3",
+      "bytes": 44352,
+      "sha256": "2ceb1d85adb2207d06d9543e3186c037937a774f35fca11292991ca4a32ee9e3"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:bright",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_bright/vi.mp3"
+      "path": "omnivoice/omnivoice_bright/vi.mp3",
+      "bytes": 44352,
+      "sha256": "f084c35977209dc4c8f58167826fe12232f2542f0483d3dd1e8b9d5c4cc3c1e5"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_high",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_high/vi.mp3"
+      "path": "omnivoice/omnivoice_male_high/vi.mp3",
+      "bytes": 44352,
+      "sha256": "7835e6d52de8f27249b0705c977d44614ebd00ccd7deca670d5347ba56682693"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_mature",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_mature/vi.mp3"
+      "path": "omnivoice/omnivoice_female_mature/vi.mp3",
+      "bytes": 45648,
+      "sha256": "b254f3eaa07ed825c70c8843e0cb0326b9b4d65c3d2c2415407d3a8590356242"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_mature",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_mature/vi.mp3"
+      "path": "omnivoice/omnivoice_male_mature/vi.mp3",
+      "bytes": 44352,
+      "sha256": "2ceb1d85adb2207d06d9543e3186c037937a774f35fca11292991ca4a32ee9e3"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_soprano",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_soprano/vi.mp3"
+      "path": "omnivoice/omnivoice_female_soprano/vi.mp3",
+      "bytes": 45792,
+      "sha256": "497fc5ca92a1db156b0701e42bd3ed28bcec5d60244ddc2213b1091a06343743"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_tenor",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_tenor/vi.mp3"
+      "path": "omnivoice/omnivoice_male_tenor/vi.mp3",
+      "bytes": 44352,
+      "sha256": "36e60e85181786e864d5389b7796d2fc1f135d36af3fa69b28f587f3a254e507"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_narrator",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_narrator/vi.mp3"
+      "path": "omnivoice/omnivoice_female_narrator/vi.mp3",
+      "bytes": 45792,
+      "sha256": "0d54634ead76a5612881c92fcad1f8579fcfb38bc62ee307320ac7fcd7ded3f4"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_narrator",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_narrator/vi.mp3"
+      "path": "omnivoice/omnivoice_male_narrator/vi.mp3",
+      "bytes": 44352,
+      "sha256": "b8596203016fa2ca924cf25c02253fe78cf3dce73b3dcaad1cf058aee4940046"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_elder_high",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_elder_high/vi.mp3"
+      "path": "omnivoice/omnivoice_female_elder_high/vi.mp3",
+      "bytes": 45792,
+      "sha256": "3d5f9fa4af6f9c98037f770648ee2c25349a21e6d342485ddc2ed4853874099d"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_elder_high",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_elder_high/vi.mp3"
+      "path": "omnivoice/omnivoice_male_elder_high/vi.mp3",
+      "bytes": 44352,
+      "sha256": "53092aac413528fbf6794b7bb76d2650ef3adc3ca5923a8d174aef4151bc1d48"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:elder",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_elder/vi.mp3"
+      "path": "omnivoice/omnivoice_elder/vi.mp3",
+      "bytes": 49248,
+      "sha256": "32d98cfdbc3484ab64ece3a037161cd79c52e8cdde2f1509b3b0f73a834ff25b"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:storyteller",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_storyteller/vi.mp3"
+      "path": "omnivoice/omnivoice_storyteller/vi.mp3",
+      "bytes": 50400,
+      "sha256": "2bd40cd72d4b9ddb86b4e6c7bbf954e1f7ca52ff3ea25d0d6fa8109819e57d2a"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper/vi.mp3"
+      "path": "omnivoice/omnivoice_whisper/vi.mp3",
+      "bytes": 50400,
+      "sha256": "47a94c0b8efd3f38bc3af1e477d90ef885a272832683e26727782824a35aba1e"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_low",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_low/vi.mp3"
+      "path": "omnivoice/omnivoice_whisper_low/vi.mp3",
+      "bytes": 44352,
+      "sha256": "4b8c184cda5d143df758199f2edb4664d900a1c0f5f331a292e2115d3a4845b6"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_high",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_high/vi.mp3"
+      "path": "omnivoice/omnivoice_whisper_high/vi.mp3",
+      "bytes": 44352,
+      "sha256": "84a36d8ffad9866f3443387af5855e002a131834a5e00bbdda01aff2d5eea794"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_elder",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_elder/vi.mp3"
+      "path": "omnivoice/omnivoice_whisper_elder/vi.mp3",
+      "bytes": 49248,
+      "sha256": "674ad86256a679f6c3de83f7cdce4e031a5a41ddbea4a7b9693dbeabb8063226"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_child/vi.mp3"
+      "path": "omnivoice/omnivoice_child/vi.mp3",
+      "bytes": 44352,
+      "sha256": "98a6e4e5dbc100c70d1f87e38a42d1b0f50866fa96ae259afeeda6d1e3033b7b"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:cartoon",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_cartoon/vi.mp3"
+      "path": "omnivoice/omnivoice_cartoon/vi.mp3",
+      "bytes": 44352,
+      "sha256": "def29360bb6aa30dfa581da43cec3ed0a6f7dc8e4b7058e47e2ba9784eaf3b90"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_soft",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_soft/vi.mp3"
+      "path": "omnivoice/omnivoice_child_soft/vi.mp3",
+      "bytes": 44352,
+      "sha256": "cc303a5f284b861e413a584941172f5d9d5e059d6e4551fefaa5e6f04b3e2cf9"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_low",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_low/vi.mp3"
+      "path": "omnivoice/omnivoice_child_low/vi.mp3",
+      "bytes": 44352,
+      "sha256": "dfe5bbf3c6b12c04ba5853a41995be5b0a3ef50186ac9cf66684e18af3f83c33"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:animated_bright",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_animated_bright/vi.mp3"
+      "path": "omnivoice/omnivoice_animated_bright/vi.mp3",
+      "bytes": 44352,
+      "sha256": "4674e0494af9fdaf72728b068c8f69f33c40a11a0cf5a6c83db49ac4afc8e0bd"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:animated_soft",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_animated_soft/vi.mp3"
+      "path": "omnivoice/omnivoice_animated_soft/vi.mp3",
+      "bytes": 44352,
+      "sha256": "b84b3ba73401d81f95a2ae12ca3fef8d6db5cb17e3262de0aed34be6996368c5"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:comic_low",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_comic_low/vi.mp3"
+      "path": "omnivoice/omnivoice_comic_low/vi.mp3",
+      "bytes": 44352,
+      "sha256": "d3d01c8f68848e836f22a90555b6e52709851619e347bb285a4835cd142983d1"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:tech_presenter",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_tech_presenter/vi.mp3"
+      "path": "omnivoice/omnivoice_tech_presenter/vi.mp3",
+      "bytes": 42336,
+      "sha256": "ca443374d88b7b9ceacc2597970e40d5d1649c0b911ee28d42d8178cf1200711"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:show_host",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_show_host/vi.mp3"
+      "path": "omnivoice/omnivoice_show_host/vi.mp3",
+      "bytes": 42336,
+      "sha256": "8676456f66c9ce83dedd74cfd5f8839bfa24a4141be261742be30e2e5f5a6fbc"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:trailer_deep",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_trailer_deep/vi.mp3"
+      "path": "omnivoice/omnivoice_trailer_deep/vi.mp3",
+      "bytes": 44352,
+      "sha256": "ebac8ed0ccdf0231146608b72ed95aa84a32a9e6dfb037d5fe0f3b1a2c3da9c5"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:radio_warm",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_radio_warm/vi.mp3"
+      "path": "omnivoice/omnivoice_radio_warm/vi.mp3",
+      "bytes": 44352,
+      "sha256": "c357957965463f832cd4d2f77a699465e4ae3f2e92d2ac600f5a9ca70df6ff88"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:mystery_whisper",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_mystery_whisper/vi.mp3"
+      "path": "omnivoice/omnivoice_mystery_whisper/vi.mp3",
+      "bytes": 50400,
+      "sha256": "1b61b47a37c9c6d12bd6e583d31a09b8c09d44b4fe5169940df665b53394fc1d"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_gentle",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_gentle/vi.mp3"
+      "path": "omnivoice/omnivoice_female_gentle/vi.mp3",
+      "bytes": 45792,
+      "sha256": "50a0bcf63509444061c755ec25e36e25582d9fb2506025f51b86fc362a0f7131"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_soft",
       "language": "vi",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_soft/vi.mp3"
+      "path": "omnivoice/omnivoice_male_soft/vi.mp3",
+      "bytes": 44352,
+      "sha256": "a16d0986b24051b7b0740449df7e2ee05fa6cdc89537f550af2ed6fdc3b0ca6e"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_confident",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_confident/vi.mp3"
+      "path": "omnivoice/omnivoice_female_confident/vi.mp3",
+      "bytes": 45792,
+      "sha256": "df5c3bbe6d67c486924b52a3531022c217456cac8e20c1676656230d03131703"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_broadcast",
       "language": "vi",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_broadcast/vi.mp3"
+      "path": "omnivoice/omnivoice_male_broadcast/vi.mp3",
+      "bytes": 42336,
+      "sha256": "d4589e87ff0aaab1356138077063c8d462092b636285b3ed9727f7ed8bfd78c6"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_bright",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_bright/vi.mp3"
+      "path": "omnivoice/omnivoice_child_bright/vi.mp3",
+      "bytes": 44352,
+      "sha256": "78d14babff6e553a78057fa2f0eca9024cbc61de5a520ac477be1ee5d572527a"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:elder_warm",
       "language": "vi",
       "category": "style",
-      "path": "omnivoice/omnivoice_elder_warm/vi.mp3"
+      "path": "omnivoice/omnivoice_elder_warm/vi.mp3",
+      "bytes": 49248,
+      "sha256": "23c504ea7ccf2c061e5396d4496faf817659ea9d327f44526c2a34f89853db45"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:comic_high",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_comic_high/vi.mp3"
+      "path": "omnivoice/omnivoice_comic_high/vi.mp3",
+      "bytes": 44352,
+      "sha256": "178ccfa065c7da059cc20e4bb5bf8b001aa3b88e64ce3d9d09bdb440c7003174"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:documentary",
       "language": "vi",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_documentary/vi.mp3"
+      "path": "omnivoice/omnivoice_documentary/vi.mp3",
+      "bytes": 44352,
+      "sha256": "e120c43a3e207cc5f3394247c7a5cb40f374771e2fbc95b102177f33756489e2"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female/en.mp3"
+      "path": "omnivoice/omnivoice_female/en.mp3",
+      "bytes": 38160,
+      "sha256": "48ce7a3a9f303e367d69497fd9db73c5205dde526d9045f4858d694419e1e35b"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male/en.mp3"
+      "path": "omnivoice/omnivoice_male/en.mp3",
+      "bytes": 37440,
+      "sha256": "f337e9e54823fd017f386509d97e7082325cbfcf1c6f96c08b9f745a435b3def"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_low",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_low/en.mp3"
+      "path": "omnivoice/omnivoice_female_low/en.mp3",
+      "bytes": 38160,
+      "sha256": "4a2be83aff9528d13c95370b346a849c84010d382d92e53ee9e955ad9a4e0228"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:deep",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_deep/en.mp3"
+      "path": "omnivoice/omnivoice_deep/en.mp3",
+      "bytes": 37440,
+      "sha256": "6d91ab195e146e8132a6495916a357e4c7b818e592e76aa8e2eca0f3be766f89"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:bright",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_bright/en.mp3"
+      "path": "omnivoice/omnivoice_bright/en.mp3",
+      "bytes": 37440,
+      "sha256": "72adea18bb6944c118740612e47d0617274af2495b7867599f0435cda53e69d5"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_high",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_high/en.mp3"
+      "path": "omnivoice/omnivoice_male_high/en.mp3",
+      "bytes": 37440,
+      "sha256": "4218618ddc0f862a89d23435bcaf5250099b6ba8d558a81ed671356dc2247f18"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_mature",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_mature/en.mp3"
+      "path": "omnivoice/omnivoice_female_mature/en.mp3",
+      "bytes": 38160,
+      "sha256": "00cae3d8d2044bfd479de7f266eca11a81906a666077780418336f36ba366dfe"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_mature",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_mature/en.mp3"
+      "path": "omnivoice/omnivoice_male_mature/en.mp3",
+      "bytes": 37440,
+      "sha256": "dd29f2cca24a94ddc8d5c5b9e4d3b159896dfd3a56788ee1ac5086854e8f4501"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_soprano",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_soprano/en.mp3"
+      "path": "omnivoice/omnivoice_female_soprano/en.mp3",
+      "bytes": 38160,
+      "sha256": "1bfd83e5d561d06ca776a70057355f25ded0a36cd34a387db1903827984dc230"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_tenor",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_tenor/en.mp3"
+      "path": "omnivoice/omnivoice_male_tenor/en.mp3",
+      "bytes": 37440,
+      "sha256": "33d20e2e2379482e78866e9f711f2e8b0317b4d841a74b306e5741ca18239178"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_narrator",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_narrator/en.mp3"
+      "path": "omnivoice/omnivoice_female_narrator/en.mp3",
+      "bytes": 38160,
+      "sha256": "0348e933da0887e9e190774445dae25ff5026b4abd699be5da7471fa3ca9aef4"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_narrator",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_narrator/en.mp3"
+      "path": "omnivoice/omnivoice_male_narrator/en.mp3",
+      "bytes": 37440,
+      "sha256": "873790f3daf944c822279d708907d2c20a80db20cffde3806440d00c226a810d"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_elder_high",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_elder_high/en.mp3"
+      "path": "omnivoice/omnivoice_female_elder_high/en.mp3",
+      "bytes": 38160,
+      "sha256": "12dc05129f2482f58a60bb4be7274de279869daca1bad4796eaf88d0c0742285"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_elder_high",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_elder_high/en.mp3"
+      "path": "omnivoice/omnivoice_male_elder_high/en.mp3",
+      "bytes": 37440,
+      "sha256": "73a91e5da8d421afaee227e86d885e574841fd1e151264529dde30db5efdff95"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:elder",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_elder/en.mp3"
+      "path": "omnivoice/omnivoice_elder/en.mp3",
+      "bytes": 41616,
+      "sha256": "eaf31974c6e387f3670a6a5a432cd76423b969df0c45ed184217dd072670773e"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:storyteller",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_storyteller/en.mp3"
+      "path": "omnivoice/omnivoice_storyteller/en.mp3",
+      "bytes": 41616,
+      "sha256": "b077b08857d6cc911da7803cf2bef2094da3333a5539917ac9eed15f3711796f"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper/en.mp3"
+      "path": "omnivoice/omnivoice_whisper/en.mp3",
+      "bytes": 37440,
+      "sha256": "45fc68ca582bdca5189c8e0c91fd6620c59e7204c0c9e030873d86fde934c543"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_low",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_low/en.mp3"
+      "path": "omnivoice/omnivoice_whisper_low/en.mp3",
+      "bytes": 37440,
+      "sha256": "8989fda464bd28c3aedf156c8ddd480675014ac0176f5281ae43725c7e5ec8f0"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_high",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_high/en.mp3"
+      "path": "omnivoice/omnivoice_whisper_high/en.mp3",
+      "bytes": 37440,
+      "sha256": "a5e2037d3057f475a3b5ff31973c7388428e851b516dff8792b349b907d0d742"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_elder",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_elder/en.mp3"
+      "path": "omnivoice/omnivoice_whisper_elder/en.mp3",
+      "bytes": 41616,
+      "sha256": "5527f2c8dc785280f724498e23f60b7611c46ffc6ccc7959e2c89b325fe784c8"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_child/en.mp3"
+      "path": "omnivoice/omnivoice_child/en.mp3",
+      "bytes": 37440,
+      "sha256": "12be18eca44d968f14d5336a5677121d4e8b794f0fb04eaa04f1561f6d5dff88"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:cartoon",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_cartoon/en.mp3"
+      "path": "omnivoice/omnivoice_cartoon/en.mp3",
+      "bytes": 37440,
+      "sha256": "f82174cfc42a5b096b32fdf7ef090a4ee8fc6b99f406f7964f04fb6684516727"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_soft",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_soft/en.mp3"
+      "path": "omnivoice/omnivoice_child_soft/en.mp3",
+      "bytes": 37440,
+      "sha256": "0409393251b1be930e8ce0304245df77484335b73f52f0672310ae93e1fb028c"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_low",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_low/en.mp3"
+      "path": "omnivoice/omnivoice_child_low/en.mp3",
+      "bytes": 37440,
+      "sha256": "0c7a9275f808335d4f960754c8c20d411c915c77609e399ee8e28edefb4e2155"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:animated_bright",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_animated_bright/en.mp3"
+      "path": "omnivoice/omnivoice_animated_bright/en.mp3",
+      "bytes": 37440,
+      "sha256": "6fd68857e39af018dda4ffa0395a1f6e2de970b7efdc590ed3a9d7b4fb42e7c7"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:animated_soft",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_animated_soft/en.mp3"
+      "path": "omnivoice/omnivoice_animated_soft/en.mp3",
+      "bytes": 37440,
+      "sha256": "7ae39df780912d02e0ddd62f04a5024ffedd9d79569a556691b43f74fd0553ad"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:comic_low",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_comic_low/en.mp3"
+      "path": "omnivoice/omnivoice_comic_low/en.mp3",
+      "bytes": 37440,
+      "sha256": "ff0746509fd3ea144c68bec57af7449415aae3eed0a85b539f65d2d878b9d98c"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:tech_presenter",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_tech_presenter/en.mp3"
+      "path": "omnivoice/omnivoice_tech_presenter/en.mp3",
+      "bytes": 37440,
+      "sha256": "b1eddcb7e34deae7a8613901659617e2e014a11ecf7691b79c6370c24cf360d8"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:show_host",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_show_host/en.mp3"
+      "path": "omnivoice/omnivoice_show_host/en.mp3",
+      "bytes": 37440,
+      "sha256": "9e7c5d1caa3d90f55b28d59a0a20a0738f0f1ee4419a61a77464a76a0ed91a9f"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:trailer_deep",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_trailer_deep/en.mp3"
+      "path": "omnivoice/omnivoice_trailer_deep/en.mp3",
+      "bytes": 37440,
+      "sha256": "053fe986c564d69f2f7b5a53dd5999703086967a80f9c28d28e16252899eafc6"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:radio_warm",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_radio_warm/en.mp3"
+      "path": "omnivoice/omnivoice_radio_warm/en.mp3",
+      "bytes": 37440,
+      "sha256": "c6e3ed7df1e0f6365e27c2e6e5d874bcf30188d97f933b4be1bb05d4edb5b16b"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:mystery_whisper",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_mystery_whisper/en.mp3"
+      "path": "omnivoice/omnivoice_mystery_whisper/en.mp3",
+      "bytes": 37440,
+      "sha256": "85d28267211d8d4e7278b798581c5c0f55aa6b35cceffa91b193abffe8d1091b"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_gentle",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_gentle/en.mp3"
+      "path": "omnivoice/omnivoice_female_gentle/en.mp3",
+      "bytes": 38160,
+      "sha256": "087c3f6d22f1e37409776c6b574db1b03d50bab4ef3023ef7b8bb211537108b1"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_soft",
       "language": "en",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_soft/en.mp3"
+      "path": "omnivoice/omnivoice_male_soft/en.mp3",
+      "bytes": 37440,
+      "sha256": "a0e1a75794d4e316b218914ea54acde63f341bbdc208e3c44c768c513d282429"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_confident",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_confident/en.mp3"
+      "path": "omnivoice/omnivoice_female_confident/en.mp3",
+      "bytes": 38160,
+      "sha256": "90c9e35a3469163aeffbf5aef90601f00bb39e9eba51f79921c8611c687068d9"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_broadcast",
       "language": "en",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_broadcast/en.mp3"
+      "path": "omnivoice/omnivoice_male_broadcast/en.mp3",
+      "bytes": 37440,
+      "sha256": "cec75c7f6f3dd88a40d7aff9d399d60aa16ee679427c78a235f514c2763b257c"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_bright",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_bright/en.mp3"
+      "path": "omnivoice/omnivoice_child_bright/en.mp3",
+      "bytes": 37440,
+      "sha256": "8271ab88599dfb246b53779a918602fe5d8b313746bc379b56550fc5013a0a58"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:elder_warm",
       "language": "en",
       "category": "style",
-      "path": "omnivoice/omnivoice_elder_warm/en.mp3"
+      "path": "omnivoice/omnivoice_elder_warm/en.mp3",
+      "bytes": 41616,
+      "sha256": "0316fe82de2f58aabbe3985d5aef13ff81dbf62f735fa658b7460106bdfcdb04"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:comic_high",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_comic_high/en.mp3"
+      "path": "omnivoice/omnivoice_comic_high/en.mp3",
+      "bytes": 37440,
+      "sha256": "ae54a4f08553538a22117e00c3748cdcf9429a058475bea8a25c6f917d1abf6f"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:documentary",
       "language": "en",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_documentary/en.mp3"
+      "path": "omnivoice/omnivoice_documentary/en.mp3",
+      "bytes": 37440,
+      "sha256": "68358793a24d0661e5e255f6184ce21b38c8f6873ac9f4056b1e5f21db0654ce"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female/zh.mp3"
+      "path": "omnivoice/omnivoice_female/zh.mp3",
+      "bytes": 38448,
+      "sha256": "721158cece5343d59b7b117689ed355ba0d5516c7a6fde049066404af5e5cd9d"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male/zh.mp3"
+      "path": "omnivoice/omnivoice_male/zh.mp3",
+      "bytes": 39744,
+      "sha256": "c3826bc51c02b130e553cd7fb1628f990ada9a54dafa06f9d17decf16b5fd513"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_low",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_low/zh.mp3"
+      "path": "omnivoice/omnivoice_female_low/zh.mp3",
+      "bytes": 38448,
+      "sha256": "e906487ccccae0145924d3927afde639fce086e87fa1864dbbbbdae401878e49"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:deep",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_deep/zh.mp3"
+      "path": "omnivoice/omnivoice_deep/zh.mp3",
+      "bytes": 39744,
+      "sha256": "98805179c39adc8e45360bd66316ea2f916b9fcb790df732ca7c1d1ad14f42f2"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:bright",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_bright/zh.mp3"
+      "path": "omnivoice/omnivoice_bright/zh.mp3",
+      "bytes": 39744,
+      "sha256": "faee58f062e2214d29e23567eedf0747a6bb816d3e98e6010866d71c0c4f898d"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_high",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_high/zh.mp3"
+      "path": "omnivoice/omnivoice_male_high/zh.mp3",
+      "bytes": 39744,
+      "sha256": "fea2f7a0ecafb6d17168135a3b38982242e632a3fa3be2fe854fb2f901c83a18"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_mature",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_mature/zh.mp3"
+      "path": "omnivoice/omnivoice_female_mature/zh.mp3",
+      "bytes": 38448,
+      "sha256": "a94b828376e899dde68b4165d6710c83c2154ad5db6566fcada3ff546d67949a"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_mature",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_mature/zh.mp3"
+      "path": "omnivoice/omnivoice_male_mature/zh.mp3",
+      "bytes": 39744,
+      "sha256": "b595ed72694c4e557b80ee6fa9838cecd87ae455f3f695f853e3aeed02146522"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_soprano",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_soprano/zh.mp3"
+      "path": "omnivoice/omnivoice_female_soprano/zh.mp3",
+      "bytes": 38448,
+      "sha256": "da7ac338ac616b68db29d562d46ce01f66f794e0706c9b05d7bfb6d4fcc62949"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_tenor",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_tenor/zh.mp3"
+      "path": "omnivoice/omnivoice_male_tenor/zh.mp3",
+      "bytes": 39744,
+      "sha256": "0e6ed016a5d72fcf57036caf8f9b98fed13b04e9c0d4184b9b29732e861c6483"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_narrator",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_narrator/zh.mp3"
+      "path": "omnivoice/omnivoice_female_narrator/zh.mp3",
+      "bytes": 38448,
+      "sha256": "eace424823acd0ad0963b32f7cca3f15d3af2353435909bd1b4d888f8e2d08c5"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_narrator",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_narrator/zh.mp3"
+      "path": "omnivoice/omnivoice_male_narrator/zh.mp3",
+      "bytes": 39744,
+      "sha256": "f427e65888b5bb99d868b2c2dfd39c83838091ed22353e00e3df7a926ed7ff3e"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_elder_high",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_elder_high/zh.mp3"
+      "path": "omnivoice/omnivoice_female_elder_high/zh.mp3",
+      "bytes": 38448,
+      "sha256": "d3596687bcfc1246c3ccb862377c6d29edf49af475f73770a0233773de50bef1"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_elder_high",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_elder_high/zh.mp3"
+      "path": "omnivoice/omnivoice_male_elder_high/zh.mp3",
+      "bytes": 39744,
+      "sha256": "91ac6b961bb968d41893da87e4a18dba1684a3b838ece8e31e827e90a96c589c"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:elder",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_elder/zh.mp3"
+      "path": "omnivoice/omnivoice_elder/zh.mp3",
+      "bytes": 44064,
+      "sha256": "1fcf1c19853b3435d19be523b92752421a4bf9f9e85cdc4f79ae8feaebcfe4e8"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:storyteller",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_storyteller/zh.mp3"
+      "path": "omnivoice/omnivoice_storyteller/zh.mp3",
+      "bytes": 44064,
+      "sha256": "2e5aa8f2e1711c8030de1234078be6aea3846b9d3e944cd2a0ce31903f2ff940"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper/zh.mp3"
+      "path": "omnivoice/omnivoice_whisper/zh.mp3",
+      "bytes": 39744,
+      "sha256": "2c716547c8eb7441368c6544171b51417d56804263583e69bf85f6734f4812f8"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_low",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_low/zh.mp3"
+      "path": "omnivoice/omnivoice_whisper_low/zh.mp3",
+      "bytes": 39744,
+      "sha256": "80504886dbb0e2abe3a15615173a51155cf093d9c31b6359ce85346659ef819b"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_high",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_high/zh.mp3"
+      "path": "omnivoice/omnivoice_whisper_high/zh.mp3",
+      "bytes": 39744,
+      "sha256": "a0665a3148ebb3de6a6ff70a2348e4f4c7e311f8ec92ec243fa84d31d6536961"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:whisper_elder",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_whisper_elder/zh.mp3"
+      "path": "omnivoice/omnivoice_whisper_elder/zh.mp3",
+      "bytes": 44064,
+      "sha256": "7fb6a7d4ebb8e0370dbc5a2c74958d14f82dd06be34242e62a59e586e2bb03f9"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_child/zh.mp3"
+      "path": "omnivoice/omnivoice_child/zh.mp3",
+      "bytes": 39744,
+      "sha256": "32035d02d3791b9c8b7b4139ea52810f2d6b97a9c708e05fcd9152f7530de966"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:cartoon",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_cartoon/zh.mp3"
+      "path": "omnivoice/omnivoice_cartoon/zh.mp3",
+      "bytes": 39744,
+      "sha256": "c5b763426eec457adf56b47bb47640f4f27ff16cf43b189c015057dc0809f152"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_soft",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_soft/zh.mp3"
+      "path": "omnivoice/omnivoice_child_soft/zh.mp3",
+      "bytes": 39744,
+      "sha256": "3c8600318f271dbc1e16d59aabe6b9d72e8ea51dcc07b7e9622e08e152f0138a"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_low",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_low/zh.mp3"
+      "path": "omnivoice/omnivoice_child_low/zh.mp3",
+      "bytes": 39744,
+      "sha256": "3d9069aa89a7a564b080191aa80c02ecb11271d53883139cef128fa1f777e28a"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:animated_bright",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_animated_bright/zh.mp3"
+      "path": "omnivoice/omnivoice_animated_bright/zh.mp3",
+      "bytes": 39744,
+      "sha256": "d3fbbe4ce6cce49bcdf9c3e8d3f33f8c1ded9e6f4dd8c34a256e1f72c212f91f"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:animated_soft",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_animated_soft/zh.mp3"
+      "path": "omnivoice/omnivoice_animated_soft/zh.mp3",
+      "bytes": 39744,
+      "sha256": "20f3ce36ec5d2a941019dde781f740463ba874322ef78ce1ce3b9641f9c1e7f2"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:comic_low",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_comic_low/zh.mp3"
+      "path": "omnivoice/omnivoice_comic_low/zh.mp3",
+      "bytes": 39744,
+      "sha256": "8bdd6273731e6d3b35fa5d3acff05b2f488db9eede3d4375d394f17c941c3842"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:tech_presenter",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_tech_presenter/zh.mp3"
+      "path": "omnivoice/omnivoice_tech_presenter/zh.mp3",
+      "bytes": 39744,
+      "sha256": "2417d92f2786f18be93c1435bfb2fa93144160021f3f5f5fa4498fa56b98015d"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:show_host",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_show_host/zh.mp3"
+      "path": "omnivoice/omnivoice_show_host/zh.mp3",
+      "bytes": 39744,
+      "sha256": "9092d8db67d745c855364ef0f87c2f35f0752da2cb2fa52f8fdcbaae7855d15e"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:trailer_deep",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_trailer_deep/zh.mp3"
+      "path": "omnivoice/omnivoice_trailer_deep/zh.mp3",
+      "bytes": 39744,
+      "sha256": "ec8f11947e83b325ff76e331bcd5f18eae63e8a46855fbf598e9cde70f3963f4"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:radio_warm",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_radio_warm/zh.mp3"
+      "path": "omnivoice/omnivoice_radio_warm/zh.mp3",
+      "bytes": 39744,
+      "sha256": "c6e4ed9a394123d9dc76b9a3e3156a9d3aa22113735f999e064bea719421d1d5"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:mystery_whisper",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_mystery_whisper/zh.mp3"
+      "path": "omnivoice/omnivoice_mystery_whisper/zh.mp3",
+      "bytes": 39744,
+      "sha256": "8e2849fe463ad937f592f28e34054a9987a87a9dc05e13b1f34fb359f0238769"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_gentle",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_female_gentle/zh.mp3"
+      "path": "omnivoice/omnivoice_female_gentle/zh.mp3",
+      "bytes": 38448,
+      "sha256": "3b2c2f32b87a46ca1d73000d65698bdd13112588318878a275a4a59bdbdbf71d"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_soft",
       "language": "zh",
       "category": "natural",
-      "path": "omnivoice/omnivoice_male_soft/zh.mp3"
+      "path": "omnivoice/omnivoice_male_soft/zh.mp3",
+      "bytes": 39744,
+      "sha256": "ae2091b6aaee397b292b1b3937654386425c95b7d0e24b79f92788be1d7941b9"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:female_confident",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_female_confident/zh.mp3"
+      "path": "omnivoice/omnivoice_female_confident/zh.mp3",
+      "bytes": 38448,
+      "sha256": "fc24b0dcc8e49b8fa2696b19e0cbf726cd50d006bf91702f776e263e65b6d3c1"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:male_broadcast",
       "language": "zh",
       "category": "narration",
-      "path": "omnivoice/omnivoice_male_broadcast/zh.mp3"
+      "path": "omnivoice/omnivoice_male_broadcast/zh.mp3",
+      "bytes": 39744,
+      "sha256": "63c640845c6b2e3b66cc9d5bb1f7c0533ce7d2ad0238a8531946f8669631f349"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:child_bright",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_child_bright/zh.mp3"
+      "path": "omnivoice/omnivoice_child_bright/zh.mp3",
+      "bytes": 39744,
+      "sha256": "cb1cb6fe4bfef2ae1ee04ac21bf399c81d1f165e9516d2b56233761c082a1b8a"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:elder_warm",
       "language": "zh",
       "category": "style",
-      "path": "omnivoice/omnivoice_elder_warm/zh.mp3"
+      "path": "omnivoice/omnivoice_elder_warm/zh.mp3",
+      "bytes": 44064,
+      "sha256": "2b4592be149fb1889b8c7f6cc49f7d37f9b3fd2bfa6e1d3d9b4ef827b3c21ef8"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:comic_high",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_comic_high/zh.mp3"
+      "path": "omnivoice/omnivoice_comic_high/zh.mp3",
+      "bytes": 39744,
+      "sha256": "707667afcd2f8b936c644b0e1ebb2b72f2e873585a47ef8103a5971a10ad04b7"
     },
     {
       "provider": "omnivoice",
       "voice": "omnivoice:documentary",
       "language": "zh",
       "category": "entertainment",
-      "path": "omnivoice/omnivoice_documentary/zh.mp3"
+      "path": "omnivoice/omnivoice_documentary/zh.mp3",
+      "bytes": 39744,
+      "sha256": "416f7693b6c71fea8cf125dd525d611b0b23827467adca04df4960111773f74d"
     },
     {
       "provider": "edge",
       "voice": "vi-VN-HoaiMyNeural",
       "language": "vi",
       "category": "natural",
-      "path": "edge/vi-VN-HoaiMyNeural/vi.mp3"
+      "path": "edge/vi-VN-HoaiMyNeural/vi.mp3",
+      "bytes": 45792,
+      "sha256": "c4f42a684616d66df23f13aea716bda34551a26550e716363ad094cf75a4eaad"
     },
     {
       "provider": "edge",
       "voice": "vi-VN-NamMinhNeural",
       "language": "vi",
       "category": "natural",
-      "path": "edge/vi-VN-NamMinhNeural/vi.mp3"
+      "path": "edge/vi-VN-NamMinhNeural/vi.mp3",
+      "bytes": 44352,
+      "sha256": "5dfd78e6438d813485c5bb912a6eeb23da905c44f0206ad8613ea4fea4ccf2f6"
     },
     {
       "provider": "edge",
       "voice": "en-US-JennyNeural",
       "language": "en",
       "category": "natural",
-      "path": "edge/en-US-JennyNeural/en.mp3"
+      "path": "edge/en-US-JennyNeural/en.mp3",
+      "bytes": 38160,
+      "sha256": "cc7ffb385274bae87038951a74a15d7a02d60e136402637062998db750b93323"
     },
     {
       "provider": "edge",
       "voice": "en-US-GuyNeural",
       "language": "en",
       "category": "natural",
-      "path": "edge/en-US-GuyNeural/en.mp3"
+      "path": "edge/en-US-GuyNeural/en.mp3",
+      "bytes": 37440,
+      "sha256": "3b185a1c265851619463cbbdd6f84ff5bbb71901c56fc1f0d8e54d37420c7f3a"
     },
     {
       "provider": "edge",
       "voice": "zh-CN-XiaoxiaoNeural",
       "language": "zh",
       "category": "natural",
-      "path": "edge/zh-CN-XiaoxiaoNeural/zh.mp3"
+      "path": "edge/zh-CN-XiaoxiaoNeural/zh.mp3",
+      "bytes": 38448,
+      "sha256": "43b9fa7668e2dd6f01c3d4dccce41b5c31e59b47f476f8a79b22ac0d6e880602"
     },
     {
       "provider": "edge",
       "voice": "zh-CN-YunxiNeural",
       "language": "zh",
       "category": "natural",
-      "path": "edge/zh-CN-YunxiNeural/zh.mp3"
+      "path": "edge/zh-CN-YunxiNeural/zh.mp3",
+      "bytes": 39744,
+      "sha256": "de26f68e026cd39a38e3350db164bede906722dfbe1cafa90d362bc4c9990abc"
     },
     {
       "provider": "vieneu",
@@ -900,8 +1152,8 @@
       "duration": 14.08,
       "peak": 0.7644,
       "rms": 0.1062,
-      "bytes": 156573,
-      "sha256": "6480df1b0cde1af3467b7a5d26e809dc6c0c094ae90c1ba0af5d431a1eaacf3e"
+      "bytes": 44352,
+      "sha256": "ad99c30fd916ea50fa53bfca99aa57581da8899d06db86a336fef5dbf7793de5"
     },
     {
       "provider": "vieneu",
@@ -914,8 +1166,8 @@
       "duration": 14.01,
       "peak": 0.7405,
       "rms": 0.1031,
-      "bytes": 146949,
-      "sha256": "7aec39df45d406c66c76d316a1ca5e5c07080b66f38cc3233b99590dee5b8946"
+      "bytes": 44352,
+      "sha256": "a29986878b08a0b2887d79f34faab970abc5f3fb1593b1783f1d80dec0a2f03a"
     },
     {
       "provider": "vieneu",
@@ -928,8 +1180,8 @@
       "duration": 15.67,
       "peak": 0.777,
       "rms": 0.1111,
-      "bytes": 188541,
-      "sha256": "8e996b286255f200dcfb7d99555c74a43079a8e2b2b8f47f7482ebccee720ec8"
+      "bytes": 44352,
+      "sha256": "36b70d87c200b9a2c72a04028d8a6f10726af8576cef2f1c0345157370a93295"
     },
     {
       "provider": "vieneu",
@@ -942,8 +1194,8 @@
       "duration": 17.31,
       "peak": 0.6769,
       "rms": 0.1056,
-      "bytes": 181317,
-      "sha256": "42a51d9742bd220099ca02cce3bf91d1341d901267a76e891870f5c8aa64120c"
+      "bytes": 44352,
+      "sha256": "eeff035fe76e50a092a2900c8595279e7e546b875d48af819b4cab52e94ed5f2"
     },
     {
       "provider": "vieneu",
@@ -956,8 +1208,8 @@
       "duration": 13.91,
       "peak": 0.6765,
       "rms": 0.1004,
-      "bytes": 140229,
-      "sha256": "55ecf5ac9211363af91e736bb8b68d91aad98aa2325d344f5cd7ad1355ccb688"
+      "bytes": 44352,
+      "sha256": "f725b5a16190e6230db80cac5316d64f80bef76b7678640fa2af531c64a89edc"
     },
     {
       "provider": "vieneu",
@@ -970,8 +1222,8 @@
       "duration": 20.85,
       "peak": 0.8526,
       "rms": 0.1166,
-      "bytes": 206445,
-      "sha256": "1919a9b3bac4063e5063460e9053c6143d346edb6496d8b9a81d31a5d3291483"
+      "bytes": 44352,
+      "sha256": "9409b5f0848e643412eece9dfcb0ac13a61ebdf236bb54b6600c06f26d91e4c9"
     },
     {
       "provider": "vieneu",
@@ -984,8 +1236,8 @@
       "duration": 15.65,
       "peak": 0.551,
       "rms": 0.11,
-      "bytes": 158805,
-      "sha256": "7430fa9e1b2aece1d685d78601b11486c4aac4143bfcfb5bbaaf8269b627050f"
+      "bytes": 44352,
+      "sha256": "07422b418c8526dde8ed57c970aeeb9104ca1d53c1b5747baeaeb0ae9a8fb29f"
     },
     {
       "provider": "vieneu",
@@ -998,8 +1250,8 @@
       "duration": 18.06,
       "peak": 0.8862,
       "rms": 0.0936,
-      "bytes": 166581,
-      "sha256": "55abd83f7807ad92438b87b9696948e9788905f872a9c8a4c9f30c78b93bd386"
+      "bytes": 44352,
+      "sha256": "bf981d7138009ce59a9d45a0f75b2243d68487c84f6a78e380c94f74cf37135a"
     },
     {
       "provider": "vieneu",
@@ -1012,8 +1264,8 @@
       "duration": 17.61,
       "peak": 0.574,
       "rms": 0.1061,
-      "bytes": 160917,
-      "sha256": "ae7c152970ab42f23e20d0f162575cbad8a98b9e000b6cad1c921bd1e6c79813"
+      "bytes": 44352,
+      "sha256": "a1266dc9018d87c7571da028be338a1f422f1d595bdc57a1674865ab8b848c87"
     },
     {
       "provider": "vieneu",
@@ -1026,8 +1278,8 @@
       "duration": 18.4,
       "peak": 0.5749,
       "rms": 0.1078,
-      "bytes": 176157,
-      "sha256": "eb0c830b1d44f64162d337176b493f22518154b972df5778824de1cfa1236467"
+      "bytes": 44352,
+      "sha256": "5c8763b9dffe5fa34523d9108f5fc28c93704897b4daf4995e786e19de95e364"
     },
     {
       "provider": "vieneu",
@@ -1040,8 +1292,8 @@
       "duration": 14.88,
       "peak": 0.8889,
       "rms": 0.0942,
-      "bytes": 156645,
-      "sha256": "6c8cb6d340e9117c6ca41b85df6275538d78be0d0756d048b969505ccc9bca6a"
+      "bytes": 44352,
+      "sha256": "10a1bdaf6f883fa35a68cdb16670910a2effbe57f822e52d232e64c971c8a15f"
     },
     {
       "provider": "vieneu",
@@ -1054,8 +1306,8 @@
       "duration": 17.74,
       "peak": 0.812,
       "rms": 0.1057,
-      "bytes": 200685,
-      "sha256": "2afabb1548d5a64d1e7c9a5f1e65dd662f4eae7410769fb7ed99f7cdaf45d561"
+      "bytes": 44352,
+      "sha256": "914feea2156b4cd94bfc6472d76dd787d1c8b271aac8ddd4941a47a20a560f94"
     },
     {
       "provider": "vieneu",
@@ -1068,8 +1320,8 @@
       "duration": 15.38,
       "peak": 0.7668,
       "rms": 0.1102,
-      "bytes": 174573,
-      "sha256": "1f0e62c4abc5127a4371a86cf24a45dc7234da64ae302b8d4458095a2fdb5f64"
+      "bytes": 44352,
+      "sha256": "dc946d6509ddbdf30ba899454c016d6de1d8070fe238a679a819d981410c0f0a"
     },
     {
       "provider": "vieneu",
@@ -1082,8 +1334,8 @@
       "duration": 14.74,
       "peak": 0.7322,
       "rms": 0.102,
-      "bytes": 175461,
-      "sha256": "d07c7bce079ab4cc9e212f3576940c0c97dffdaa79c1770d9e87b66a78bb5820"
+      "bytes": 44352,
+      "sha256": "4a41ff81f5cd55807097767ac32a96295cd00b74361c3b1ecf2cdbbd99036319"
     },
     {
       "provider": "vieneu",
@@ -1096,8 +1348,8 @@
       "duration": 15.5,
       "peak": 0.8611,
       "rms": 0.1176,
-      "bytes": 153789,
-      "sha256": "100f37575f6e116b5cb076afb487f8d3ffc4deb047defeb59d87b1fa87e9ce08"
+      "bytes": 44352,
+      "sha256": "f7ded4912d555c839740de51a19f304c7b8f665435bd78ea48f19092c3f0e21a"
     },
     {
       "provider": "vieneu",
@@ -1110,8 +1362,8 @@
       "duration": 16.47,
       "peak": 0.5586,
       "rms": 0.1047,
-      "bytes": 150861,
-      "sha256": "7952f089ef99d17d3a4881b15788c713ac0e78f95d90061f42d6023cd0a3cf7d"
+      "bytes": 44352,
+      "sha256": "9710cc09bf913ad026e6b16d74ddd82f08223793bf6920a44429c7b62bf591fb"
     },
     {
       "provider": "vieneu",
@@ -1124,8 +1376,8 @@
       "duration": 17.67,
       "peak": 0.7403,
       "rms": 0.1018,
-      "bytes": 184893,
-      "sha256": "89226810518ef2145cf1475c92503ead3335b4f66ecc913e8639f6494d0fc42c"
+      "bytes": 44352,
+      "sha256": "180191b2db1c45065d0b065cdb2af3e9b38f419923bad68db00599d1a696a431"
     },
     {
       "provider": "vieneu",
@@ -1138,8 +1390,8 @@
       "duration": 14.46,
       "peak": 0.8695,
       "rms": 0.1022,
-      "bytes": 146685,
-      "sha256": "b9994b75dd96ba28d73c770b11f7869581bfb1aeecca7a29ab6f2f359765d031"
+      "bytes": 44352,
+      "sha256": "a4795274338f6dbad384214f96f9cbf49cc757b6c08beb69b3b155bda34f9479"
     },
     {
       "provider": "vieneu",
@@ -1152,8 +1404,8 @@
       "duration": 19.91,
       "peak": 0.7147,
       "rms": 0.1068,
-      "bytes": 212565,
-      "sha256": "8e26df720517292bc935844782893a4b55af4319783a4649443d950dacde7a3b"
+      "bytes": 44352,
+      "sha256": "dafdbc4c272399cb0bac718c65cb56730566a0fce5bd9e233f00942a638a9da0"
     },
     {
       "provider": "vieneu",
@@ -1166,8 +1418,8 @@
       "duration": 16.74,
       "peak": 0.7426,
       "rms": 0.1008,
-      "bytes": 178197,
-      "sha256": "eaa9142664bb606aa70c3beba38f1dc8bd91af785381efc32ba9265697f590ed"
+      "bytes": 44352,
+      "sha256": "bb637daf7ca2950f5ecef9850d60c9fe786b99b191a57acdd050141ae27a9a5c"
     },
     {
       "provider": "vieneu",
@@ -1180,8 +1432,8 @@
       "duration": 21.36,
       "peak": 0.6631,
       "rms": 0.1076,
-      "bytes": 245805,
-      "sha256": "56d2cf58315c7ed04eb77723b5e679e753cec2b0055dd4ef0d087e316649e0dc"
+      "bytes": 44352,
+      "sha256": "f4eb53b4823b6a4053582c4a35abedea5f3c32775a20557fa0269450e11f5a51"
     },
     {
       "provider": "vieneu",
@@ -1194,8 +1446,8 @@
       "duration": 22.3,
       "peak": 0.7641,
       "rms": 0.0987,
-      "bytes": 237237,
-      "sha256": "15f6f570f6fab10139746db38bb6cdbe45c00fd7b79364b29bbca42153a16374"
+      "bytes": 44352,
+      "sha256": "cb106327ec2819e92693f7a70f697d5ad05cd4b6a50f81ea547ab2de4cf9e734"
     },
     {
       "provider": "vieneu",
@@ -1208,8 +1460,8 @@
       "duration": 15.23,
       "peak": 0.776,
       "rms": 0.1035,
-      "bytes": 200037,
-      "sha256": "5136be74ce4e017944fa204ba6351c9d435d4074fac9024428a464e7e0561c7d"
+      "bytes": 44352,
+      "sha256": "3ba1a176c3040ae0ead5a2c49e52bf2e77a775653301707d0c6bffd88c6e7a7b"
     },
     {
       "provider": "vieneu",
@@ -1222,8 +1474,8 @@
       "duration": 15.44,
       "peak": 0.7201,
       "rms": 0.1095,
-      "bytes": 174525,
-      "sha256": "1e1ef7dc26a4257ca2f479d888c28b2924b82fc6b0dc8dbaec5749022100bc10"
+      "bytes": 44352,
+      "sha256": "a743b43b55a0e0b05e90194cb561cb5a7da61dc277e30463301560ed7be8e90c"
     },
     {
       "provider": "vieneu",
@@ -1236,8 +1488,8 @@
       "duration": 17.31,
       "peak": 0.8901,
       "rms": 0.0906,
-      "bytes": 196989,
-      "sha256": "ad35e81c5d4fce1d99fb9d28d67a7d289e716e71c486c966bffeeb8a0f957dbf"
+      "bytes": 44352,
+      "sha256": "980f1576bb999aca96c70c584b200f27b365bc828c760588c5269f59eedd4bb4"
     }
   ]
 }

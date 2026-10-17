@@ -177,7 +177,15 @@ class ProjectWorkspaceController:
         host._watermark_video_path = str((video.files or {}).get("watermark_video") or "")
         input_path = host._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
         host._video_path = input_path
-        host._video_thumbnail_source = thumbnail_source(video.files.get("thumbnail") or "")
+        thumbnail_file = str((video.files or {}).get("thumbnail") or "")
+        if not os.path.isfile(thumbnail_file) and input_path and os.path.isfile(input_path):
+            video_dir = video_store.get_video_dir(video.video_id)
+            target_thumb = os.path.join(video_dir, "thumbnail.jpg")
+            host._video_thumbnail_source = host._create_video_thumbnail(input_path, target_thumb)
+            if os.path.isfile(target_thumb):
+                video = video_store.update_video(video.video_id, files={**(video.files or {}), "thumbnail": target_thumb}) or video
+        else:
+            host._video_thumbnail_source = thumbnail_source(thumbnail_file)
         host._replace_logs(host._read_video_logs(video.video_id))
         host.videoPathChanged.emit()
         host.videoThumbnailChanged.emit()

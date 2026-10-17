@@ -355,7 +355,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: root.trackLeft + root.trackWidth + 8
-            contentHeight: Math.max(height, root.trackCanvasHeight)
+            contentHeight: Math.max(height, root.trackCanvasHeight + 20)
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             flickableDirection: Flickable.AutoFlickDirection
@@ -837,6 +837,12 @@ Rectangle {
                     border.color: Theme.divider
                     clip: true
 
+                    Rectangle {
+                        anchors.fill: parent
+                        color: Theme.surface
+                        opacity: 0.28
+                    }
+
                     Row {
                         anchors.fill: parent
 
@@ -854,7 +860,7 @@ Rectangle {
                                 sourceSize.height: 96
                                 fillMode: Image.PreserveAspectCrop
                                 asynchronous: true
-                                opacity: status === Image.Ready ? 0.72 : 0
+                                opacity: status === Image.Ready ? 0.85 : 0
                             }
                         }
                     }

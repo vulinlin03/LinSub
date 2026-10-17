@@ -883,11 +883,12 @@ Item {
             SubtitleTimeline {
                 id: manualSubtitleTimeline
                 SplitView.fillWidth: true
-                SplitView.preferredHeight: root.height < 780
-                    ? Math.max(200, Math.min(220, root.timelineDesiredHeight))
-                    : Math.max(220, Math.min(520, root.timelineDesiredHeight))
-                SplitView.minimumHeight: 200
-                SplitView.maximumHeight: 520
+                SplitView.preferredHeight: Math.max(
+                    manualSubtitleTimeline.trackCanvasHeight + 20,
+                    Math.max(260, Math.min(Math.round(root.height * 0.6), root.timelineDesiredHeight))
+                )
+                SplitView.minimumHeight: 220
+                SplitView.maximumHeight: Math.max(400, Math.round(root.height * 0.75))
                 onHeightChanged: {
                     if (root.layoutReady)
                         layoutSaveTimer.restart();
@@ -995,7 +996,8 @@ Item {
                     if (!pressed)
                         return;
                     const currentY = timelineResizeGrip.mapToItem(root, mouse.x, mouse.y).y;
-                    root.timelineDesiredHeight = Math.max(200, Math.min(520,
+                    root.timelineDesiredHeight = Math.max(220, Math.min(
+                        Math.max(400, Math.round(root.height * 0.75)),
                         Math.round(timelineResizeGrip.dragStartHeight
                             + timelineResizeGrip.dragStartY - currentY)));
                 }
