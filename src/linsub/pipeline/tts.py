@@ -77,15 +77,6 @@ def preprocess_text_for_tts(text: str, *, is_clause_continuation: bool = False) 
     text = " ".join(text.split())
     text = re.sub(r"\s+([,.;:!?])", r"\1", text)
 
-    # Insert natural breath pauses before clause conjunctions in longer phrases
-    text = re.sub(
-        r'(?<=[^\s,;:!?]{2})\s+(nhưng|tuy nhiên|bởi vì|vì thế|vì vậy|cho nên|mặc dù|trong khi|do đó)\b',
-        r', \1',
-        text,
-        flags=re.IGNORECASE,
-    )
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-
     if text and text[-1] not in ".!?,;:。！？；：":
         if is_clause_continuation:
             text += ","

@@ -297,21 +297,18 @@ def fit_speech_to_natural_cadence(
     *,
     is_last: bool = False,
 ) -> AudioSegment:
-    """Adapt synthesized speech to natural cinematic dialogue cadence.
+    """Adapt synthesized speech to natural dialogue pacing without breaking sentence continuity.
 
-    1. Overrun handling:
-       - Uses pitch-preserving atempo to fit speech into the dialogue window,
-         extending up to 400-500ms into the idle gap before the next speaker,
-         capped at 1.28x max speed to preserve human voice quality.
-    2. Underrun & dramatic pacing handling:
-       - In human dubbing (especially anime/manhua narration and drama), dialogue
-         is delivered in distinct clauses separated by dramatic pauses.
-       - When TTS finishes in less than ~78% of the video slot, internal clause
-         silences are elastically expanded (up to 1500ms per pause).
-       - If speech is rushed (<55% of slot), gentle tempo relaxation (0.88x) is
-         applied to the clauses so the speaker sounds dignified and articulate.
-       - A natural lead-in offset (120-280ms) is prepended so speech aligns with
-         the actor's mouth movement / visual cut instead of firing abruptly at 0ms.
+    1. Natural continuity:
+       - Preserves the entire synthesized sentence as one cohesive, unbroken utterance.
+       - NEVER arbitrarily cuts or injects artificial silence into the middle of a continuous phrase.
+       - Internal breath pauses remain strictly governed by the actual punctuation marks in the text.
+    2. Inter-sentence breathing pauses (nhịp nghỉ giữa các câu):
+       - Overruns are gently compressed (capped at 1.28x max speed) to guarantee a clean breathing
+         gap before the next speaker/sentence starts.
+       - For very short utterances in extended dialogue slots (>2000ms), applies gentle, subtle
+         relaxation (0.92x-0.95x) so speech is unhurried and clear, leaving a natural resting
+         pause before the next line begins.
     """
     audio = trim_silence(audio)
     if len(audio) <= 0:
@@ -338,45 +335,13 @@ def fit_speech_to_natural_cadence(
         return audio[:max_room]
 
     # Underrun: speech fits well within actor's window
-    # When line is significantly shorter than the scene (> 1.8s slot), apply elastic expansion
-    if len(audio) < source_dur * 0.78 and source_dur >= 1800:
-        from pydub.silence import split_on_silence
-
-        chunks = split_on_silence(audio, min_silence_len=85, silence_thresh=-40.0, keep_silence=30)
-        target_span = min(max_room, int(source_dur * 0.85))
-
-        if len(chunks) > 1:
-            # We have multiple clauses
-            if len(audio) < source_dur * 0.55:
-                relaxed_chunks = []
-                for c in chunks:
-                    if len(c) >= 120:
-                        c_relaxed = fit_tempo_to_duration(
-                            c, int(len(c) / 0.88), temp_dir, cancellation_id, allow_slowdown=True
-                        )
-                        relaxed_chunks.append(c_relaxed)
-                    else:
-                        relaxed_chunks.append(c)
-                chunks = relaxed_chunks
-            speech_dur = sum(len(c) for c in chunks)
-            remaining_silence = max(0, target_span - speech_dur)
-            pause_len = min(1500, max(220, remaining_silence // (len(chunks) - 1)))
-            expanded = AudioSegment.empty()
-            for i, chunk in enumerate(chunks):
-                if i > 0:
-                    expanded += AudioSegment.silent(duration=pause_len, frame_rate=audio.frame_rate)
-                expanded += chunk
-            audio = expanded
-        else:
-            # Single clause
-            if len(audio) < source_dur * 0.60 and source_dur >= 2000:
-                target_dur = min(source_dur, int(len(audio) / 0.85))
-                audio = fit_tempo_to_duration(audio, target_dur, temp_dir, cancellation_id, allow_slowdown=True)
-
-        remaining_gap = source_dur - len(audio)
-        if remaining_gap > 300:
-            lead_in = min(280, max(120, remaining_gap // 4))
-            audio = AudioSegment.silent(duration=lead_in, frame_rate=audio.frame_rate) + audio
+    # Keep the sentence completely continuous and unbroken.
+    # If the utterance is very short in an extended dialogue window (> 2.0s slot),
+    # apply gentle, subtle pacing relaxation (0.92-0.95x) so it sounds natural and unhurried.
+    if len(audio) < source_dur * 0.60 and source_dur >= 2000:
+        target_dur = min(source_dur, int(len(audio) / 0.94))
+        if target_dur > len(audio):
+            audio = fit_tempo_to_duration(audio, target_dur, temp_dir, cancellation_id, allow_slowdown=True)
 
     if len(audio) > max_room:
         audio = audio[:max_room]

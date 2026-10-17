@@ -79,10 +79,10 @@ class SpeechTimingTests(unittest.TestCase):
     def test_preprocess_text_for_tts_cadence_and_pausing(self):
         from linsub.pipeline.tts import preprocess_text_for_tts, is_clause_continuation
 
-        # Natural breath commas inserted before conjunctions
+        # Preserves continuous phrase without injecting mid-sentence commas
         raw = "Tôi đã cố gắng rất nhiều nhưng kết quả không như ý"
         processed = preprocess_text_for_tts(raw)
-        self.assertEqual(processed, "Tôi đã cố gắng rất nhiều, nhưng kết quả không như ý.")
+        self.assertEqual(processed, "Tôi đã cố gắng rất nhiều nhưng kết quả không như ý.")
 
         # Clause continuation ends with comma instead of abrupt period
         clause = "Khi tôi bước vào căn phòng đó"
@@ -110,20 +110,16 @@ class SpeechTimingTests(unittest.TestCase):
         import tempfile
         from pydub.generators import Sine
         from linsub.pipeline.audio_timeline import fit_speech_to_natural_cadence
-        from linsub.utils.audio import AudioSegment
 
-        # Synthesize a multi-clause utterance: 600ms tone + 120ms pause + 700ms tone = 1420ms
-        clause1 = Sine(300).to_audio_segment(duration=600).set_frame_rate(48000).set_channels(1)
-        pause = AudioSegment.silent(duration=120, frame_rate=48000)
-        clause2 = Sine(300).to_audio_segment(duration=700).set_frame_rate(48000).set_channels(1)
-        audio = clause1 + pause + clause2
+        # Synthesize a continuous sentence: 1400ms tone
+        audio = Sine(300).to_audio_segment(duration=1400).set_frame_rate(48000).set_channels(1)
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Slot duration is 4000ms: short audio (1420ms) should elastically expand internal pause & add lead-in
+            # Slot duration is 4000ms: short audio (1400ms) receives subtle pacing relaxation without cutting
             fitted = fit_speech_to_natural_cadence(
                 audio, 1000, 5000, 6000, 10000, temp_dir, "test"
             )
-            # Resulting duration should comfortably occupy 75% - 90% of the 4000ms slot
-            self.assertGreaterEqual(len(fitted), int(4000 * 0.75))
+            # Resulting duration fits comfortably within the slot and does not overrun
+            self.assertGreaterEqual(len(fitted), 1400)
             self.assertLessEqual(len(fitted), 4000 - 70)
 

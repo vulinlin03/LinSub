@@ -379,7 +379,7 @@ class ManualPreviewAudioController(QObject):
                 return self._cache[key]
         cache_path = None
         if self._pcm_cache_directory is not None:
-            digest = hashlib.sha256(json.dumps((key, "pcm-stereo-48k-fit-v3"), default=str).encode()).hexdigest()
+            digest = hashlib.sha256(json.dumps((key, "pcm-stereo-48k-fit-v4"), default=str).encode()).hexdigest()
             cache_path = self._pcm_cache_directory / f"{digest}.pcm"
             if cache_path.is_file() and cache_path.stat().st_size > 0 and cache_path.stat().st_size % 4 == 0:
                 samples = self._map_pcm(cache_path, persistent=True)
