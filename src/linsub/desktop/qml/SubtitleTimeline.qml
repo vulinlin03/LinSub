@@ -830,17 +830,17 @@ Rectangle {
                     id: videoTrack
                     x: root.trackLeft
                     y: 30 + root.resultTrackOffset
-                    width: (root.sourcePictureEnd || root.duration) * root.pixelsPerSecond
+                    width: Math.max(8, Math.max(root.sourcePictureEnd, root.duration) * root.pixelsPerSecond)
                     height: 40
-                    color: Theme.video
+                    color: "#18202A"
                     border.width: 1
                     border.color: Theme.divider
                     clip: true
 
                     Rectangle {
                         anchors.fill: parent
-                        color: Theme.surface
-                        opacity: 0.28
+                        color: Theme.interactiveMuted
+                        opacity: 0.35
                     }
 
                     Row {
@@ -860,7 +860,7 @@ Rectangle {
                                 sourceSize.height: 96
                                 fillMode: Image.PreserveAspectCrop
                                 asynchronous: true
-                                opacity: status === Image.Ready ? 0.85 : 0
+                                opacity: status === Image.Ready ? 0.9 : 0
                             }
                         }
                     }
@@ -874,7 +874,10 @@ Rectangle {
                             required property var modelData
                             readonly property string clipId: String(modelData.clip_id || "")
                             property int previewStartMs: Number(modelData.start_ms || 0)
-                            property int previewDurationMs: Number(modelData.duration_ms || 0)
+                            property int previewDurationMs: Math.max(
+                                Number(modelData.duration_ms || 0),
+                                Math.round(root.duration * 1000)
+                            )
                             property int gestureStartMs: previewStartMs
                             property int gestureDurationMs: previewDurationMs
                             property real gesturePointerX: 0

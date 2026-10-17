@@ -178,8 +178,16 @@ class ProjectWorkspaceController:
         input_path = host._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
         host._video_path = input_path
         thumbnail_file = str((video.files or {}).get("thumbnail") or "")
+        video_dir = video_store.get_video_dir(video.video_id)
+        if thumbnail_file and not os.path.isabs(thumbnail_file):
+            candidate = os.path.join(video_dir, os.path.basename(thumbnail_file))
+            if os.path.isfile(candidate):
+                thumbnail_file = candidate
+            else:
+                candidate2 = os.path.abspath(thumbnail_file)
+                if os.path.isfile(candidate2):
+                    thumbnail_file = candidate2
         if not os.path.isfile(thumbnail_file) and input_path and os.path.isfile(input_path):
-            video_dir = video_store.get_video_dir(video.video_id)
             target_thumb = os.path.join(video_dir, "thumbnail.jpg")
             host._video_thumbnail_source = host._create_video_thumbnail(input_path, target_thumb)
             if os.path.isfile(target_thumb):

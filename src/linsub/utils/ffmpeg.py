@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import shutil
 import subprocess
 from functools import lru_cache
@@ -115,8 +117,75 @@ def get_ffmpeg_version(*, timeout_seconds: float = 15.0) -> str:
         return f"Unknown (Error: {exc})"
 
 
+def _duration_from_ffmpeg(video_path: str, timeout_seconds: float) -> float:
+    try:
+        cmd = [_binary("ffmpeg"), "-hide_banner", "-i", video_path]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1.0, float(timeout_seconds)),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
+        if match:
+            h, m, s = match.groups()
+            return int(h) * 3600 + int(m) * 60 + float(s)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _dimensions_from_ffmpeg(video_path: str, timeout_seconds: float) -> tuple[int, int]:
+    try:
+        cmd = [_binary("ffmpeg"), "-hide_banner", "-i", video_path]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1.0, float(timeout_seconds)),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        match = re.search(r"Video:.*,\s*(\d+)x(\d+)", result.stderr)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    except Exception:
+        pass
+    return 1920, 1080
+
+
+def _stream_types_from_ffmpeg(media_path: str, timeout_seconds: float) -> set[str]:
+    types = set()
+    try:
+        cmd = [_binary("ffmpeg"), "-hide_banner", "-i", media_path]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1.0, float(timeout_seconds)),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        for line in result.stderr.splitlines():
+            if "Stream #" in line:
+                if "Video:" in line:
+                    types.add("video")
+                if "Audio:" in line:
+                    types.add("audio")
+                if "Subtitle:" in line:
+                    types.add("subtitle")
+    except Exception:
+        pass
+    return types
+
+
 def get_video_duration(video_path: str, *, timeout_seconds: float = 15.0) -> float:
-    """Calculates the duration of a video file using ffprobe."""
+    """Calculates the duration of a video file using ffprobe with ffmpeg fallback."""
     try:
         cmd = [
             _binary("ffprobe"), "-v", "error",
@@ -134,9 +203,12 @@ def get_video_duration(video_path: str, *, timeout_seconds: float = 15.0) -> flo
             check=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        return float(result.stdout.strip())
+        val = float(result.stdout.strip())
+        if val > 0:
+            return val
     except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-        return 0.0
+        pass
+    return _duration_from_ffmpeg(video_path, timeout_seconds)
 
 
 def get_video_dimensions(video_path: str, *, timeout_seconds: float = 15.0) -> tuple[int, int]:
@@ -157,12 +229,12 @@ def get_video_dimensions(video_path: str, *, timeout_seconds: float = 15.0) -> t
         )
         width, height = result.stdout.strip().split(",")
         return int(width), int(height)
-    except Exception as exc:
-        raise RuntimeError(f"Cannot read video dimensions: {exc}") from exc
+    except Exception:
+        return _dimensions_from_ffmpeg(video_path, timeout_seconds)
 
 
 def get_media_stream_types(media_path: str, *, timeout_seconds: float = 15.0) -> set[str]:
-    """Return codec stream types from a bounded ffprobe call."""
+    """Return codec stream types from a bounded ffprobe call with ffmpeg fallback."""
     try:
         result = subprocess.run(
             [
@@ -184,13 +256,16 @@ def get_media_stream_types(media_path: str, *, timeout_seconds: float = 15.0) ->
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         payload = json.loads(result.stdout)
-        return {
+        types = {
             str(stream.get("codec_type") or "")
             for stream in payload.get("streams", [])
             if isinstance(stream, dict) and stream.get("codec_type")
         }
+        if types:
+            return types
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TypeError, ValueError):
-        return set()
+        pass
+    return _stream_types_from_ffmpeg(media_path, timeout_seconds)
 
 
 def validate_video_integrity(video_path: str, *, timeout_seconds: float = 900.0) -> None:
