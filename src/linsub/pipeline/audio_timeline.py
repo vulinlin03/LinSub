@@ -1,19 +1,23 @@
 import json
 import math
 import os
+import struct
 import subprocess
 import tempfile
 import time
+import wave
 
 from linsub.utils.audio import AudioSegment
 
 from linsub.config import MEDIA_PROCESS_TIMEOUT_SECONDS
-from linsub.pipeline.process_registry import check_cancellation, communicate_process
+from linsub.pipeline.process_registry import check_cancellation, communicate_process, is_cancelled
 from linsub.services.video_store import log_to_video
 from linsub.utils.ffmpeg import _binary, get_video_duration
 
 _FINAL_AUDIO_TAIL_MARGIN_MS = 120
 _ATOMIC_REPLACE_ATTEMPTS = 8
+_LONG_TIMELINE_CHUNK_MS = 10 * 60 * 1000
+_LONG_TIMELINE_CHUNK_THRESHOLD_MS = 15 * 60 * 1000
 
 
 def _replace_exported_audio(temporary_path: str, output_path: str) -> None:
@@ -32,14 +36,16 @@ def _replace_exported_audio(temporary_path: str, output_path: str) -> None:
         raise last_error
 
 
-def _apply_volume(audio: AudioSegment, volume: int, label: str, video_id: str) -> AudioSegment:
+def _apply_volume(audio: AudioSegment, volume: int, label: str, video_id: str, *, log: bool = True) -> AudioSegment:
     """Apply a linear percentage without changing track selection."""
     volume = max(0, min(100, int(volume)))
     if volume == 0:
-        log_to_video(video_id, f"{label} volume set to 0%. Muting this track.")
+        if log:
+            log_to_video(video_id, f"{label} volume set to 0%. Muting this track.")
         return audio - 100
     db_change = 20 * math.log10(volume / 100.0)
-    log_to_video(video_id, f"{label} volume set to {volume}%. Applying {db_change:.2f} dB.")
+    if log:
+        log_to_video(video_id, f"{label} volume set to {volume}%. Applying {db_change:.2f} dB.")
     return audio + db_change
 
 
@@ -450,6 +456,160 @@ def compress_to_fit(audio: AudioSegment, max_duration_ms: int, temp_dir: str, vi
         video_id,
     )
 
+
+def _build_long_audio_timeline(
+    segments_json_path: str,
+    voice_parts_dir: str,
+    video_path: str,
+    output_wav_path: str,
+    video_id: str,
+    video_duration_ms: int,
+    timeline_options: dict,
+    progress_callback=None,
+) -> None:
+    """Mix a long dub in bounded windows and append PCM without decoding the full timeline."""
+    output_directory = os.path.dirname(os.path.abspath(output_wav_path))
+    os.makedirs(output_directory, exist_ok=True)
+    total_chunks = math.ceil(video_duration_ms / _LONG_TIMELINE_CHUNK_MS)
+    source_path = timeline_options.get("background_audio_path")
+    try:
+        source_duration_ms = max(0, int(round(get_video_duration(source_path) * 1000))) if source_path else 0
+    except Exception:
+        source_duration_ms = 0
+    if source_path and source_duration_ms <= 0:
+        source_duration_ms = max(
+            0,
+            int(timeline_options.get("original_audio_duration_ms") or 0),
+            video_duration_ms,
+        )
+
+    log_to_video(
+        video_id,
+        f"Long audio timeline: mixing in {total_chunks} windows of up to "
+        f"{_LONG_TIMELINE_CHUNK_MS // 60000} minutes to keep RAM bounded.",
+    )
+
+    staged_output = ""
+    try:
+        with tempfile.TemporaryDirectory(prefix=".audio-timeline-windows-", dir=output_directory) as work_dir:
+            handle, staged_output = tempfile.mkstemp(
+                prefix=".audio-timeline-", suffix=".wav", dir=output_directory,
+            )
+            os.close(handle)
+            estimated_data_bytes = video_duration_ms * 48 * 6
+            use_rf64 = estimated_data_bytes >= 0xFFFFFF00
+            with open(staged_output, "w+b") as merged:
+                _write_pcm_wav_header(merged, rf64=use_rf64)
+                written_frames = 0
+                for chunk_index, start_ms in enumerate(
+                    range(0, video_duration_ms, _LONG_TIMELINE_CHUNK_MS), start=1,
+                ):
+                    check_cancellation(timeline_options.get("process_registry_id") or video_id)
+                    end_ms = min(video_duration_ms, start_ms + _LONG_TIMELINE_CHUNK_MS)
+                    chunk_path = os.path.join(work_dir, f"timeline-{chunk_index:05d}.wav")
+                    chunk_options = dict(timeline_options)
+                    chunk_options.update(
+                        range_ms=(start_ms, end_ms),
+                        timeline_duration_ms=video_duration_ms,
+                        source_audio_streaming=True,
+                        source_audio_duration_ms=source_duration_ms,
+                        prepared_base_audio_path=None,
+                        progress_callback=progress_callback,
+                    )
+                    percent = int(round(start_ms * 100 / max(1, video_duration_ms)))
+                    detail = (
+                        f"Trộn lồng tiếng: {_format_audio_time(start_ms)} / "
+                        f"{_format_audio_time(video_duration_ms)} ({percent}%) "
+                        f"[đoạn {chunk_index}/{total_chunks}]"
+                    )
+                    log_to_video(video_id, f"Mixing audio window {chunk_index}/{total_chunks}: {detail}")
+                    if progress_callback:
+                        progress_callback(start_ms, video_duration_ms, detail)
+                    build_audio_timeline(
+                        segments_json_path,
+                        voice_parts_dir,
+                        video_path,
+                        chunk_path,
+                        video_id,
+                        **chunk_options,
+                    )
+                    with wave.open(chunk_path, "rb") as chunk:
+                        params = chunk.getparams()
+                        if (params.nchannels, params.sampwidth, params.framerate) != (2, 3, 48000):
+                            raise RuntimeError(
+                                "A mixed audio window has an unexpected format; refusing to join it."
+                            )
+                        while True:
+                            frames = chunk.readframes(48000 * 30)
+                            if not frames:
+                                break
+                            if len(frames) % 6:
+                                raise RuntimeError("A mixed audio window ended with an incomplete PCM frame.")
+                            merged.write(frames)
+                            written_frames += len(frames) // 6
+                    percent = int(round(end_ms * 100 / max(1, video_duration_ms)))
+                    detail = (
+                        f"Trộn lồng tiếng: {_format_audio_time(end_ms)} / "
+                        f"{_format_audio_time(video_duration_ms)} ({percent}%) "
+                        f"[đoạn {chunk_index}/{total_chunks}]"
+                    )
+                    if progress_callback:
+                        progress_callback(end_ms, video_duration_ms, detail)
+                    check_cancellation(timeline_options.get("process_registry_id") or video_id)
+
+                expected_frames = video_duration_ms * 48
+                if written_frames != expected_frames:
+                    raise RuntimeError(
+                        "Chunked audio windows do not exactly cover the requested video timeline "
+                        f"({written_frames} of {expected_frames} audio frames)."
+                    )
+                data_bytes = written_frames * 6
+                file_size = merged.tell()
+                if use_rf64:
+                    merged.seek(20)
+                    merged.write(struct.pack("<QQQ", file_size - 8, data_bytes, written_frames))
+                else:
+                    if data_bytes >= 0xFFFFFFFF:
+                        raise RuntimeError("Audio timeline exceeded classic WAV limits; RF64 was required.")
+                    merged.seek(4)
+                    merged.write(struct.pack("<I", file_size - 8))
+                    merged.seek(40)
+                    merged.write(struct.pack("<I", data_bytes))
+                merged.flush()
+                os.fsync(merged.fileno())
+
+            if os.path.getsize(staged_output) <= 44:
+                raise RuntimeError("Chunked audio timeline produced an empty WAV file.")
+            _replace_exported_audio(staged_output, output_wav_path)
+            staged_output = ""
+    finally:
+        if staged_output:
+            try:
+                os.remove(staged_output)
+            except FileNotFoundError:
+                pass
+    log_to_video(video_id, f"Successfully exported chunked dubbed audio to: {output_wav_path}")
+
+
+def _format_audio_time(milliseconds: int) -> str:
+    seconds = max(0, int(milliseconds)) // 1000
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _write_pcm_wav_header(stream, *, rf64: bool) -> None:
+    """Write a seekable PCM WAV/RF64 header for the final audio track."""
+    fmt = struct.pack("<HHIIHH", 1, 2, 48000, 48000 * 2 * 3, 2 * 3, 24)
+    if rf64:
+        stream.write(b"RF64\xff\xff\xff\xffWAVEds64")
+        stream.write(struct.pack("<IQQQI", 28, 0, 0, 0, 0))
+    else:
+        stream.write(b"RIFF\x00\x00\x00\x00WAVE")
+    stream.write(b"fmt " + struct.pack("<I", len(fmt)) + fmt)
+    stream.write(b"data" + (b"\xff\xff\xff\xff" if rf64 else b"\x00\x00\x00\x00"))
+
+
 def build_audio_timeline(
     segments_json_path: str,
     voice_parts_dir: str,
@@ -482,6 +642,9 @@ def build_audio_timeline(
     ducking_release_ms: int = 420,
     range_ms: tuple[int, int] | None = None,
     timeline_duration_ms: int | None = None,
+    source_audio_streaming: bool = False,
+    source_audio_duration_ms: int | None = None,
+    progress_callback=None,
 ):
     """Compose cached audio layers without invoking a speech model.
 
@@ -492,11 +655,17 @@ def build_audio_timeline(
     into source pauses; recognition must create separate spoken windows.
     """
     cancellation_id = process_registry_id or video_id
-    log_to_video(video_id, "Starting build of the audio timeline...")
+    if range_ms is None:
+        log_to_video(video_id, "Starting build of the audio timeline...")
     
     # Retrieve duration to build the baseline silence track
-    video_dur = get_video_duration(video_path)
-    log_to_video(video_id, f"Base video duration: {video_dur:.2f} seconds")
+    video_dur = (
+        max(0, int(timeline_duration_ms)) / 1000.0
+        if range_ms is not None and timeline_duration_ms is not None
+        else get_video_duration(video_path)
+    )
+    if range_ms is None:
+        log_to_video(video_id, f"Base video duration: {video_dur:.2f} seconds")
     
     video_dur_ms = int(timeline_duration_ms if range_ms is not None else video_dur * 1000)
     window_start, window_end = range_ms or (0, video_dur_ms)
@@ -510,6 +679,44 @@ def build_audio_timeline(
         raise RuntimeError("Audio timeline segments must be a JSON list.")
     if require_voice_parts and not segments:
         raise RuntimeError("Audio timeline requires at least one translated voice segment.")
+
+    if (range_ms is None and video_dur_ms > _LONG_TIMELINE_CHUNK_THRESHOLD_MS
+            and not prepared_base_audio_path):
+        timeline_options = {
+            "background_audio_path": background_audio_path,
+            "original_video_volume": original_video_volume,
+            "original_audio_fade_in_ms": original_audio_fade_in_ms,
+            "original_audio_fade_out_ms": original_audio_fade_out_ms,
+            "original_audio_start_ms": original_audio_start_ms,
+            "original_audio_duration_ms": original_audio_duration_ms,
+            "background_music_path": background_music_path,
+            "background_music_volume": background_music_volume,
+            "tts_volume": tts_volume,
+            "process_registry_id": process_registry_id,
+            "require_voice_parts": require_voice_parts,
+            "fit_voice_to_slots": fit_voice_to_slots,
+            "require_background_audio": require_background_audio,
+            "background_music_start_ms": background_music_start_ms,
+            "background_music_duration_ms": background_music_duration_ms,
+            "background_music_source_in_ms": background_music_source_in_ms,
+            "background_music_loop": background_music_loop,
+            "background_music_fade_in_ms": background_music_fade_in_ms,
+            "background_music_fade_out_ms": background_music_fade_out_ms,
+            "ducking_enabled": ducking_enabled,
+            "ducking_reduction_db": ducking_reduction_db,
+            "ducking_attack_ms": ducking_attack_ms,
+            "ducking_release_ms": ducking_release_ms,
+        }
+        return _build_long_audio_timeline(
+            segments_json_path,
+            voice_parts_dir,
+            video_path,
+            output_wav_path,
+            video_id,
+            video_dur_ms,
+            timeline_options,
+            progress_callback=progress_callback,
+        )
         
     # Editor previews reuse this decoded/volume-adjusted base. Reopening a
     # timeline or changing one sentence no longer decodes the full source and
@@ -519,12 +726,71 @@ def build_audio_timeline(
         and os.path.isfile(prepared_base_audio_path)
         and os.path.getsize(prepared_base_audio_path) > 44
     )
-    if range_ms is not None:
+    if range_ms is not None and source_audio_streaming:
+        # Decode only this timeline window of the source bed. This branch is
+        # reserved for long full-timeline mixing; editor ranges still provide
+        # an already bounded source bed through the existing path below.
+        base_audio = AudioSegment.silent(
+            duration=output_duration_ms, frame_rate=48000,
+        ).set_channels(2)
+        if background_audio_path:
+            if not os.path.isfile(background_audio_path) or os.path.getsize(background_audio_path) <= 0:
+                if require_background_audio:
+                    raise FileNotFoundError(
+                        f"Required original/background audio track is missing: {background_audio_path}"
+                    )
+            else:
+                try:
+                    source_duration = max(
+                        0,
+                        int(source_audio_duration_ms)
+                        if source_audio_duration_ms is not None
+                        else int(round(get_video_duration(background_audio_path) * 1000)),
+                    )
+                    effective_duration = (
+                        min(source_duration, max(0, int(original_audio_duration_ms)))
+                        if original_audio_duration_ms is not None
+                        else source_duration
+                    )
+                    source_offset_ms = max(0, int(original_audio_start_ms))
+                    source_timeline_start = max(window_start, source_offset_ms)
+                    source_timeline_end = min(window_end, source_offset_ms + effective_duration)
+                    if source_timeline_end > source_timeline_start:
+                        source_start = source_timeline_start - source_offset_ms
+                        source_clip = _decode_window(
+                            background_audio_path,
+                            source_start,
+                            source_timeline_end - source_timeline_start,
+                            cancellation_id,
+                        )
+                        source_clip = _apply_volume(
+                            source_clip, original_video_volume, "Source audio", video_id, log=False,
+                        )
+                        source_clip = _window_fades(
+                            source_clip,
+                            source_start,
+                            effective_duration,
+                            original_audio_fade_in_ms,
+                            original_audio_fade_out_ms,
+                        )
+                        base_audio = base_audio.overlay(
+                            source_clip, position=source_timeline_start - window_start,
+                        )
+                except Exception as exc:
+                    if is_cancelled(cancellation_id):
+                        raise
+                    if require_background_audio:
+                        raise RuntimeError(
+                            f"Could not load required original/background audio track: {exc}"
+                        ) from exc
+                    log_to_video(video_id, "Source audio window unavailable; using a silent base layer.")
+        base_audio = base_audio.set_frame_rate(48000).set_channels(2)
+    elif range_ms is not None:
         # The caller supplies a source bed already bounded/mapped to this
         # sequence window. Never decode/allocate the complete source here.
         base_audio = (AudioSegment.from_file(background_audio_path)
                       if background_audio_path else AudioSegment.silent(duration=output_duration_ms))
-        base_audio = _apply_volume(base_audio, original_video_volume, "Source audio", video_id)
+        base_audio = _apply_volume(base_audio, original_video_volume, "Source audio", video_id, log=False)
         base_audio = base_audio.set_frame_rate(48000).set_channels(2)
         if background_music_path:
             start = max(window_start, background_music_start_ms)
@@ -534,7 +800,7 @@ def build_audio_timeline(
                 music = _decode_window(background_music_path,
                     background_music_source_in_ms + start - background_music_start_ms,
                     end - start, cancellation_id, loop=background_music_loop)
-                music = _apply_volume(music, background_music_volume, "Background music", video_id)
+                music = _apply_volume(music, background_music_volume, "Background music", video_id, log=False)
                 music = _window_fades(music, start - background_music_start_ms,
                     background_music_duration_ms or video_dur_ms,
                     background_music_fade_in_ms, background_music_fade_out_ms)
@@ -672,6 +938,7 @@ def build_audio_timeline(
                     pass
     
     total = len(segments)
+    last_reported_mix_ms = window_start
     for idx, seg in enumerate(segments, 1):
         if not bool(seg.get("_voice_enabled", True)):
             continue
@@ -737,6 +1004,17 @@ def build_audio_timeline(
             offset = max(0, window_start - start_ms)
             tts_segment = tts_segment[offset:max(offset, window_end - start_ms)]
             base_audio = base_audio.overlay(tts_segment, position=max(0, start_ms - window_start))
+            if progress_callback and source_audio_streaming:
+                current_ms = min(window_end, max(window_start, slot_end_ms))
+                if current_ms - last_reported_mix_ms >= 60_000:
+                    last_reported_mix_ms = current_ms
+                    percent = int(round(current_ms * 100 / max(1, video_dur_ms)))
+                    progress_callback(
+                        current_ms,
+                        video_dur_ms,
+                        f"Trộn lồng tiếng: {_format_audio_time(current_ms)} / "
+                        f"{_format_audio_time(video_dur_ms)} ({percent}%)",
+                    )
         except Exception as exc:
             raise RuntimeError(f"Failed to overlay required voice segment {idx} ({part_filename}): {exc}") from exc
 

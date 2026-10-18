@@ -1017,6 +1017,17 @@ def _finish_after_translation(video, reporter, video_dir, original_audio_target,
         reporter.update(87, "building_audio_timeline", "Reusing mixed audio checkpoint")
     else:
         reporter.update(83, "building_audio_timeline", "Fitting voices to the video timeline")
+
+        def report_audio_mix_progress(current, total, detail):
+            fraction = min(1.0, max(0.0, current / total)) if total else 0.0
+            reporter.update(
+                83 + round(4 * fraction),
+                "building_audio_timeline",
+                detail,
+                current // 1000,
+                total // 1000,
+            )
+
         build_audio_timeline(
             transcript_json,
             voice_parts_dir,
@@ -1031,6 +1042,7 @@ def _finish_after_translation(video, reporter, video_dir, original_audio_target,
             ducking_enabled=video.audio_ducking_enabled,
             ducking_reduction_db=video.audio_ducking_reduction_db,
             tts_volume=getattr(video, "tts_volume", 100),
+            progress_callback=report_audio_mix_progress,
         )
         _mark_checkpoint(video, "timeline", timeline_signature)
 
