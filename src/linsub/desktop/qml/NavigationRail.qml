@@ -71,6 +71,7 @@ Rectangle {
                 { key: "single", label: qsTr("Tự động"), icon: "play" },
                 { key: "manual", label: qsTr("Thủ công"), icon: "edit" },
                 { key: "batch", label: qsTr("Hàng loạt"), icon: "projects" },
+                { key: "merge", label: qsTr("Ghép video"), icon: "video" },
                 { key: "downloads", label: qsTr("Tải xuống"), icon: "download" },
                 { key: "social", label: qsTr("Đăng mạng xã hội"), icon: "share" }
             ]

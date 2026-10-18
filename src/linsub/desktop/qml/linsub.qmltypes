@@ -112,6 +112,10 @@ Module {
         Property { name: "undoEditLabel"; type: "QString"; isReadonly: true }
         Property { name: "redoEditLabel"; type: "QString"; isReadonly: true }
         Property { name: "hasCopiedKeyframes"; type: "bool"; isReadonly: true }
+        Property { name: "speakerMaleVoice"; type: "QString" }
+        Property { name: "speakerFemaleVoice"; type: "QString" }
+        Method { name: "maleVoiceOptionsForProvider"; type: "QVariantList"; Parameter { name: "provider"; type: "string" } }
+        Method { name: "femaleVoiceOptionsForProvider"; type: "QVariantList"; Parameter { name: "provider"; type: "string" } }
         Method { name: "setEditHistoryScope"; Parameter { name: "scope"; type: "string" } }
         Method { name: "undoEdit"; type: "bool" }
         Method { name: "redoEdit"; type: "bool" }

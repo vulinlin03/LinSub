@@ -212,6 +212,9 @@ def main(*, smoke_test: bool = False) -> None:
             last_non_minimized_state = state
 
         window.windowStateChanged.connect(preserve_pre_minimize_state)
+        window.closing.connect(lambda *_: app.quit())
+        app.setQuitOnLastWindowClosed(True)
+        app.lastWindowClosed.connect(app.quit)
         controller = LinSubController._qml_instance
         if controller is None:
             raise RuntimeError("QML did not create the AppController singleton")

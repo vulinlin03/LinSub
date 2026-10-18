@@ -81,6 +81,7 @@ from linsub.desktop.subtitle_overlay_renderer import SubtitleOverlayRenderer
 from linsub.desktop.url_import import ProjectUrlImportRegistry
 from linsub.desktop.voice_clone_recorder import VoiceCloneRecorder
 from linsub.desktop.video_export_controller import VideoExportController
+from linsub.desktop.video_merge_controller import VideoMergeController
 from linsub.pipeline.process_registry import pause_video
 from linsub.schemas.editor import (
     EditorClip,
@@ -164,6 +165,10 @@ class LinSubController(QObject):
     ttsVoiceChanged = Signal()
     ttsVoiceOptionsChanged = Signal()
     speakerModeChanged = Signal()
+    speakerMaleVoiceChanged = Signal()
+    speakerFemaleVoiceChanged = Signal()
+    speakerProfilesChanged = Signal()
+    speakerDetectionStateChanged = Signal(str, int, str)
     enableAudioSeparationChanged = Signal()
     originalVolumeChanged = Signal()
     backgroundMusicVolumeChanged = Signal()
@@ -376,6 +381,10 @@ class LinSubController(QObject):
         self._manual_edit_history.changed.connect(self.manualEditHistoryChanged)
         self._manual_edit_history.changed.connect(self.editHistoryChanged)
         self.selectedVideoChanged.connect(self._sync_edit_history_context)
+        self.selectedVideoChanged.connect(self.speakerMaleVoiceChanged.emit)
+        self.selectedVideoChanged.connect(self.speakerFemaleVoiceChanged.emit)
+        self.ttsProviderChanged.connect(self.speakerMaleVoiceChanged.emit)
+        self.ttsProviderChanged.connect(self.speakerFemaleVoiceChanged.emit)
         self.projectSetupChanged.connect(self._sync_edit_history_context)
         self._manual_subtitles = ManualSubtitleModel(self, self._manual_edit_history)
         self._manual_editor_document = ManualEditorDocumentModel(self)
@@ -424,6 +433,7 @@ class LinSubController(QObject):
         self._project_workspace = ProjectWorkspaceController(self)
         self._project_commands = ProjectCommandsController(self)
         self._project_import = ProjectImportController(self)
+        self._video_merge = VideoMergeController(self, self)
         self._catalog_media = CatalogMediaController(self)
         self._diagnostics = DiagnosticsController(self)
         self._runtime_device = RuntimeDeviceController(self)
@@ -1185,6 +1195,10 @@ class LinSubController(QObject):
     def mediaDownloader(self):
         return self._media_downloader
 
+    @Property(QObject, constant=True)
+    def videoMerge(self):
+        return self._video_merge
+
     @Property(bool, notify=mediaImportChanged)
     def mediaImportBusy(self):
         return self._media_import_busy
@@ -1635,6 +1649,172 @@ class LinSubController(QObject):
         if self._speaker_mode != normalized:
             self._speaker_mode = normalized
             self.speakerModeChanged.emit()
+
+    @staticmethod
+    def _detect_voice_gender(opt) -> str:
+        g = str(opt.get("gender") or "").lower()
+        if g in {"male", "female"}:
+            return g
+        v = str(opt.get("voice") or "").lower()
+        label = str(opt.get("label") or "")
+        lbl_lower = label.lower()
+        from linsub.core.vieneu_voices import VIENEU_VOICES
+        vieneu_genders = {name.lower(): gender for name, gender, _ in VIENEU_VOICES}
+        name = v.replace("vieneu:", "").strip().lower()
+        if name in vieneu_genders:
+            return vieneu_genders[name]
+        if (
+            "female" in v
+            or "girl" in v
+            or "soprano" in v
+            or "· nữ" in lbl_lower
+            or " nữ" in lbl_lower
+            or "(nữ)" in lbl_lower
+            or "nữ ·" in lbl_lower
+            or "nữ tự nhiên" in lbl_lower
+            or "nữ ấm" in lbl_lower
+            or "nữ sáng" in lbl_lower
+            or "nữ trưởng thành" in lbl_lower
+            or "female" in lbl_lower
+        ):
+            return "female"
+        if (
+            "male" in v
+            or "boy" in v
+            or "deep" in v
+            or "storyteller" in v
+            or "tenor" in v
+            or "documentary" in v
+            or "tech_presenter" in v
+            or "show_host" in v
+            or "radio_warm" in v
+            or "elder" in v
+            or "trailer" in v
+            or "whisper_low" in v
+            or "comic_low" in v
+            or "· nam" in lbl_lower
+            or " nam" in lbl_lower
+            or "(nam)" in lbl_lower
+            or "nam ·" in lbl_lower
+            or "nam tự nhiên" in lbl_lower
+            or "nam trầm" in lbl_lower
+            or "nam sáng" in lbl_lower
+            or "nam bắc" in lbl_lower
+            or "nam nam" in lbl_lower
+            or "nam trung" in lbl_lower
+            or "nam bộ" in lbl_lower
+            or "male" in lbl_lower
+        ):
+            return "male"
+        return ""
+
+    @Property(str, notify=speakerMaleVoiceChanged)
+    def speakerMaleVoice(self):
+        video = self._selected_video()
+        files = dict((video.files if video else {}) or {})
+        overrides = dict(files.get("speaker_voice_overrides") or {})
+        custom = str(overrides.get("male") or "").strip()
+        current_prov = str(self._tts_provider or "vieneu")
+        if custom:
+            if current_prov.startswith("vieneu") and custom.startswith("vieneu:"):
+                return custom
+            if current_prov == "omnivoice" and custom.startswith("omnivoice:"):
+                return custom
+            if current_prov == "edge" and not custom.startswith("vieneu:") and not custom.startswith("omnivoice:"):
+                return custom
+        if current_prov.startswith("vieneu"):
+            return "vieneu:Hải Đăng"
+        if current_prov == "edge":
+            return "vi-VN-NamMinhNeural"
+        return "omnivoice:male"
+
+    @speakerMaleVoice.setter
+    def speakerMaleVoice(self, value):
+        val = str(value or "").strip()
+        video = self._selected_video()
+        if not video:
+            return
+        files = dict(video.files or {})
+        overrides = dict(files.get("speaker_voice_overrides") or {})
+        if overrides.get("male") != val:
+            if val:
+                overrides["male"] = val
+            else:
+                overrides.pop("male", None)
+            if overrides:
+                files["speaker_voice_overrides"] = overrides
+            else:
+                files.pop("speaker_voice_overrides", None)
+            video_store.update_video(video.video_id, files=files)
+            self.speakerMaleVoiceChanged.emit()
+            self.speakerProfilesChanged.emit()
+
+    @Property(str, notify=speakerFemaleVoiceChanged)
+    def speakerFemaleVoice(self):
+        video = self._selected_video()
+        files = dict((video.files if video else {}) or {})
+        overrides = dict(files.get("speaker_voice_overrides") or {})
+        custom = str(overrides.get("female") or "").strip()
+        current_prov = str(self._tts_provider or "vieneu")
+        if custom:
+            if current_prov.startswith("vieneu") and custom.startswith("vieneu:"):
+                return custom
+            if current_prov == "omnivoice" and custom.startswith("omnivoice:"):
+                return custom
+            if current_prov == "edge" and not custom.startswith("vieneu:") and not custom.startswith("omnivoice:"):
+                return custom
+        if current_prov.startswith("vieneu"):
+            return "vieneu:Trúc Ly"
+        if current_prov == "edge":
+            return "vi-VN-HoaiMyNeural"
+        return "omnivoice:female"
+
+    @speakerFemaleVoice.setter
+    def speakerFemaleVoice(self, value):
+        val = str(value or "").strip()
+        video = self._selected_video()
+        if not video:
+            return
+        files = dict(video.files or {})
+        overrides = dict(files.get("speaker_voice_overrides") or {})
+        if overrides.get("female") != val:
+            if val:
+                overrides["female"] = val
+            else:
+                overrides.pop("female", None)
+            if overrides:
+                files["speaker_voice_overrides"] = overrides
+            else:
+                files.pop("speaker_voice_overrides", None)
+            video_store.update_video(video.video_id, files=files)
+            self.speakerFemaleVoiceChanged.emit()
+            self.speakerProfilesChanged.emit()
+
+    @Slot(str, result="QVariantList")
+    def maleVoiceOptionsForProvider(self, provider: str = ""):
+        p = str(provider or self._tts_provider or "vieneu")
+        all_options = self.manualVoiceOptionsForProvider(p)
+        filtered = []
+        for opt in all_options:
+            v = str(opt.get("voice") or "")
+            if v in {"omnivoice:clone", "vieneu:clone", "omnivoice:multiple"}:
+                continue
+            if self._detect_voice_gender(opt) == "male":
+                filtered.append(opt)
+        return filtered
+
+    @Slot(str, result="QVariantList")
+    def femaleVoiceOptionsForProvider(self, provider: str = ""):
+        p = str(provider or self._tts_provider or "vieneu")
+        all_options = self.manualVoiceOptionsForProvider(p)
+        filtered = []
+        for opt in all_options:
+            v = str(opt.get("voice") or "")
+            if v in {"omnivoice:clone", "vieneu:clone", "omnivoice:multiple"}:
+                continue
+            if self._detect_voice_gender(opt) == "female":
+                filtered.append(opt)
+        return filtered
 
     @Property("QVariantList", notify=ttsVoiceOptionsChanged)
     def ttsVoiceOptions(self):
@@ -4755,6 +4935,11 @@ class LinSubController(QObject):
             "speakerMode": str(video.speaker_mode or "single"),
             "segmentOverride": bool(override),
             "hasPublishedVoice": bool(published_voice_record(video, validate=False)),
+            "speakerVoiceOverrides": dict((video.files or {}).get("speaker_voice_overrides") or {}),
+            "speakerMaleVoice": str(dict((video.files or {}).get("speaker_voice_overrides") or {}).get("male")
+                                   or ("vieneu:Hải Đăng" if global_provider.startswith("vieneu") else "omnivoice:male")),
+            "speakerFemaleVoice": str(dict((video.files or {}).get("speaker_voice_overrides") or {}).get("female")
+                                     or ("vieneu:Trúc Ly" if global_provider.startswith("vieneu") else "omnivoice:female")),
         }
 
     @Slot(str, result=bool)
@@ -4778,6 +4963,7 @@ class LinSubController(QObject):
             return False
         return self.runManualTool(tool_id)
 
+    @Slot(str, str, str, str, str, "QVariantMap", result=bool)
     @Slot(str, str, str, str, str, result=bool)
     def configureAndRunManualVoice(
         self,
@@ -4786,6 +4972,7 @@ class LinSubController(QObject):
         scope: str,
         segment_id: str,
         speaker_mode: str,
+        speaker_overrides: dict | None = None,
     ) -> bool:
         """Commit a confirmed Manual voice draft and run only the Voice tool."""
         video = self._selected_video()
@@ -4864,6 +5051,12 @@ class LinSubController(QObject):
             files["manual_voice_overrides"] = overrides
         else:
             files.pop("manual_voice_overrides", None)
+        if speaker_overrides:
+            current_spk = dict(files.get("speaker_voice_overrides") or {})
+            for k, v in dict(speaker_overrides).items():
+                if v:
+                    current_spk[str(k)] = str(v)
+            files["speaker_voice_overrides"] = current_spk
         video_store.update_video(video.video_id, files=files)
         video = video_store.get_video(video.video_id) or video
         if selected_scope == "all":
@@ -4887,6 +5080,75 @@ class LinSubController(QObject):
             # document or changed voice setup is an explicit fresh rerun.
             return self.runManualTool("voice", not incremental_voice_refresh(video))
         return self.runManualTool("voice")
+
+    @Slot(result="QVariantList")
+    @Slot(str, result="QVariantList")
+    @Slot(str, str, result="QVariantList")
+    def getSpeakerProfiles(self, video_id: str = "", provider: str = ""):
+        """Return detected speaker profiles and their assigned voices for the video."""
+        vid = str(video_id or self._selected_video_id or "")
+        video = video_store.get_video(vid)
+        if not video:
+            return []
+        language = LinSubController._selected_voice_language(self)
+        target_provider = self._normalized_tts_provider(language, provider or video.tts_provider or "vieneu")
+        from linsub.services.speaker_profiles import load_video_speakers
+        return load_video_speakers(video, target_provider)
+
+    @Slot(str, "QVariantMap", result=bool)
+    def saveSpeakerVoiceMapping(self, video_id: str, mapping: dict):
+        """Save character voice overrides into project metadata."""
+        vid = str(video_id or self._selected_video_id or "")
+        video = video_store.get_video(vid)
+        if not video:
+            return False
+        files = dict(video.files or {})
+        cleaned = {str(k): str(v) for k, v in dict(mapping or {}).items() if str(v).strip()}
+        if cleaned:
+            files["speaker_voice_overrides"] = cleaned
+        else:
+            files.pop("speaker_voice_overrides", None)
+        video_store.update_video(vid, files=files)
+        video_store.log_to_video(
+            vid,
+            f"Speaker voice mapping updated with {len(cleaned)} character assignment(s)."
+        )
+        self.speakerProfilesChanged.emit()
+        if vid == self._selected_video_id:
+            self.selectedVideoChanged.emit()
+            self.manualStageStateChanged.emit()
+        return True
+
+    @Slot(result=bool)
+    @Slot(str, result=bool)
+    def detectSpeakers(self, video_id: str = ""):
+        """Run speaker detection in background thread if source segments exist."""
+        vid = str(video_id or self._selected_video_id or "")
+        video = video_store.get_video(vid)
+        if not video:
+            return False
+        if getattr(self, "_speaker_detecting", False):
+            return False
+
+        self._speaker_detecting = True
+        self.speakerDetectionStateChanged.emit("detecting", 10, "Đang nhận diện các nhân vật...")
+
+        def run_detection():
+            try:
+                from linsub.services.speaker_profiles import identify_video_speakers
+                def progress(current, total):
+                    pct = round(10 + 85 * current / max(1, total))
+                    self.speakerDetectionStateChanged.emit("detecting", pct, f"Đang phân tích câu {current}/{total}...")
+                identify_video_speakers(video, progress_callback=progress)
+                self.speakerDetectionStateChanged.emit("done", 100, "Nhận diện người nói hoàn tất.")
+                self.speakerProfilesChanged.emit()
+            except Exception as e:
+                self.speakerDetectionStateChanged.emit("error", 0, str(e))
+            finally:
+                self._speaker_detecting = False
+
+        threading.Thread(target=run_detection, daemon=True, name="speaker-detection-bg").start()
+        return True
 
     @Slot(str, result=bool)
     def cancelManualTool(self, tool_id):

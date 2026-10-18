@@ -160,7 +160,7 @@ QtObject {
         if (match)
             return "Đang dịch bằng Gemini: câu " + match[1] + "-" + match[2] + " / " + match[3]
 
-        match = source.match(/^Rendering final video \((\d+)%\)$/)
+        match = source.match(/^Rendering final video \((\d+(?:\.\d+)?)%\)$/)
         if (match)
             return "Đang xuất video (" + match[1] + "%)"
 

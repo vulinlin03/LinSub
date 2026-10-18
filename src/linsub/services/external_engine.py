@@ -69,6 +69,8 @@ class ExternalEngineClient:
                 "TRANSFORMERS_OFFLINE": "1",
             }
         )
+        source_root = str(Path(__file__).resolve().parents[2])
+        environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
         startupinfo = None
         if os.name == "nt":
             startupinfo = subprocess.STARTUPINFO()

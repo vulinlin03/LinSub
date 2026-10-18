@@ -54,14 +54,22 @@ class SingleInstanceCoordinator(QObject):
     def _notify_existing_instance(self) -> bool:
         socket = QLocalSocket()
         socket.connectToServer(self.server_name)
-        if not socket.waitForConnected(250):
+        if not socket.waitForConnected(300):
             socket.abort()
             return False
         socket.write(ACTIVATE_MESSAGE)
         socket.flush()
         socket.waitForBytesWritten(500)
+        # Wait for acknowledgment from a living GUI process
+        if socket.waitForReadyRead(600):
+            response = socket.readLine()
+            if b"OK" in bytes(response):
+                socket.disconnectFromServer()
+                return True
         socket.disconnectFromServer()
-        return True
+        # If no ACK or timed out, clean up stale server
+        QLocalServer.removeServer(self.server_name)
+        return False
 
     def _accept_connections(self) -> None:
         if self._server is None:
@@ -74,6 +82,12 @@ class SingleInstanceCoordinator(QObject):
             socket.disconnected.connect(lambda active_socket=socket: self._release_socket(active_socket))
             socket.readAll()
             self.activationRequested.emit()
+            try:
+                socket.write(b"OK\n")
+                socket.flush()
+                socket.waitForBytesWritten(500)
+            except Exception:
+                pass
             socket.disconnectFromServer()
 
     def _release_socket(self, socket: QLocalSocket) -> None:

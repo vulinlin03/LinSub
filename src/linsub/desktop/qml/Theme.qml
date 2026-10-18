@@ -64,7 +64,9 @@ QtObject {
     readonly property int radiusTiny: 4
 
     readonly property int space4: 4
+    readonly property int space6: 6
     readonly property int space8: 8
+    readonly property int space10: 10
     readonly property int space12: 12
     readonly property int space16: 16
     readonly property int space20: 20

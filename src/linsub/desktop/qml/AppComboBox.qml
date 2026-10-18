@@ -131,62 +131,56 @@ ComboBox {
         required property int index
         required property var modelData
         readonly property bool optionAvailable: !voiceDelegate.modelData || voiceDelegate.modelData.available === undefined || voiceDelegate.modelData.available !== false
-        readonly property string optionCategory: voiceDelegate.modelData && voiceDelegate.modelData.category !== undefined ? String(voiceDelegate.modelData.category) : ""
-        readonly property bool showCategory: optionCategory.length > 0 && (voiceDelegate.index === 0 || !root.model[voiceDelegate.index - 1] || String(root.model[voiceDelegate.index - 1].category || "") !== optionCategory)
+        readonly property bool isSelected: voiceDelegate.index === root.currentIndex
 
         width: root.popup.width - 12
-        height: 40 + (showCategory ? 26 : 0)
+        height: 38
+        leftPadding: 10
+        rightPadding: 10
+        topPadding: 0
+        bottomPadding: 0
         enabled: voiceDelegate.optionAvailable
         highlighted: voiceDelegate.enabled && root.highlightedIndex === voiceDelegate.index
 
-        contentItem: ColumnLayout {
-            spacing: 0
+        contentItem: RowLayout {
+            spacing: 8
+
+            PlatformLogo {
+                Layout.preferredWidth: 22
+                Layout.preferredHeight: 22
+                platform: root.logoAt(voiceDelegate.index)
+                visible: platform.length > 0
+            }
 
             Text {
                 Layout.fillWidth: true
-                Layout.preferredHeight: voiceDelegate.showCategory ? 26 : 0
-                visible: voiceDelegate.showCategory
-                text: String(voiceDelegate.modelData.categoryLabel || voiceDelegate.optionCategory)
-                color: Theme.textSubtle
+                Layout.fillHeight: true
+                text: root.textAt(voiceDelegate.index)
+                color: !voiceDelegate.enabled ? Theme.textDisabled : Theme.text
                 font.family: Theme.fontFamily
-                font.pixelSize: TypeScale.metadata
-                font.weight: Font.DemiBold
-                verticalAlignment: Text.AlignBottom
-                leftPadding: 8
+                font.pixelSize: TypeScale.control
+                fontSizeMode: Text.FixedSize
+                font.weight: voiceDelegate.isSelected ? Font.DemiBold : Font.Normal
+                verticalAlignment: Text.AlignVCenter
                 textFormat: Text.PlainText
+                elide: Text.ElideRight
             }
 
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                spacing: 8
-
-                PlatformLogo {
-                    Layout.preferredWidth: 22
-                    Layout.preferredHeight: 22
-                    platform: root.logoAt(voiceDelegate.index)
-                    visible: platform.length > 0
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    text: root.textAt(voiceDelegate.index)
-                    color: !voiceDelegate.enabled ? Theme.textDisabled : (voiceDelegate.highlighted ? Theme.interactive : Theme.text)
-                    font.family: Theme.fontFamily
-                    font.pixelSize: TypeScale.control
-                    fontSizeMode: Text.FixedSize
-                    font.weight: voiceDelegate.highlighted ? Font.DemiBold : Font.Normal
-                    verticalAlignment: Text.AlignVCenter
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                }
+            Text {
+                visible: voiceDelegate.isSelected
+                text: "✓"
+                color: "#10B981"
+                font.family: Theme.fontFamily
+                font.bold: true
+                font.pixelSize: 15
+                Layout.alignment: Qt.AlignVCenter
             }
         }
 
         background: Rectangle {
             radius: Theme.radiusSmall
-            color: voiceDelegate.highlighted ? Theme.interactiveMuted : "transparent"
+            color: voiceDelegate.highlighted ? Theme.surfaceMuted : "transparent"
+            border.width: 0
         }
     }
 }

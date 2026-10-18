@@ -29,10 +29,13 @@ Item {
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: UiMetrics.pageMargin
-        spacing: Theme.space12
+        anchors.topMargin: Theme.space8
+        anchors.bottomMargin: Theme.space8
+        spacing: Theme.space8
 
         PageHeader {
             Layout.fillWidth: true
+            Layout.preferredHeight: 34
             title: AppController.projectName || qsTr("Xử lý video")
 
             Text {
@@ -109,8 +112,8 @@ Item {
                     Layout.fillHeight: true
                     Layout.minimumWidth: root.wideLayout ? 650 : 0
                     Layout.preferredWidth: root.wideLayout ? 1040 : 600
-                    Layout.minimumHeight: implicitHeight
-                    Layout.preferredHeight: root.wideLayout ? 650 : 620
+                    Layout.minimumHeight: 0
+                    Layout.preferredHeight: root.wideLayout ? 560 : 520
                 }
 
             }

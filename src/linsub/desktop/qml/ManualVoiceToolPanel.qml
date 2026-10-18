@@ -40,3 +40,4 @@ ColumnLayout {
         onClicked: root.inspector.openVoiceDialog()
     }
 }
+

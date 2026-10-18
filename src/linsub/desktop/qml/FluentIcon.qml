@@ -9,6 +9,9 @@ Item {
     readonly property bool accentVariant: iconColor === Theme.interactive || iconColor === Theme.focus
     readonly property url assetSource: IconCatalog.asset(name, accentVariant)
 
+    implicitWidth: iconSize
+    implicitHeight: iconSize
+
     Image {
         anchors.centerIn: parent
         width: root.iconSize

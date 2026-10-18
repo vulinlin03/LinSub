@@ -614,7 +614,8 @@ def cpu_runtime_profile(profile: RuntimeProfile | None = None, *, memory: Memory
         return profile
     return replace(
         profile, key="cpu_minimum" if tight else "cpu_low_memory",
-        label="CPU memory constrained", cpu_threads=min(profile.cpu_threads, 2 if tight else 4),
+        label="CPU memory constrained",
+        cpu_threads=min(profile.cpu_threads, 4 if profile.logical_cpu_count >= 8 else (2 if tight else 4)),
         whisper_batch_size=min(profile.whisper_batch_size, 1 if tight else 2),
         warm_whisper_on_startup=False, warm_hymt2_on_startup=False,
         translation_idle_seconds=min(profile.translation_idle_seconds, 30 if tight else 90),

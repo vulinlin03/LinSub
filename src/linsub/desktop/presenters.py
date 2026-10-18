@@ -195,12 +195,49 @@ def format_memory_size(value: int) -> str:
     return f"{value / (1024**3):.1f} GB"
 
 
+VIENEU_VOICE_DESCRIPTIONS = {
+    "Hải Đăng": "Trẻ trung, rõ ràng",
+    "Thiện Minh": "Trầm ấm, truyền cảm",
+    "Thiền Tâm Đức": "Điềm đạm, sâu lắng",
+    "Quang Sơn": "Hào sảng, tự nhiên",
+    "Minh Đức": "Đĩnh đạc, tự tin",
+    "Phạm Tuyên": "Đời thường, tự nhiên",
+    "Thái Sơn": "Ấm áp, mộc mạc",
+    "Xuân Vĩnh": "Kể chuyện, lôi cuốn",
+    "Thanh Bình": "Trầm, chững chạc",
+    "Minh Triết": "Trẻ trung, năng động",
+    "Đức Trí": "Trầm ấm, lịch lãm",
+    "Adam": "Hiện đại, phong cách",
+    "Quốc Tuấn": "Mạnh mẽ, nam tính",
+    "Adam bựa": "Hài hước, vui nhộn",
+    "Trúc Ly": "Dịu dàng, trong trẻo",
+    "Mai Anh": "Tự nhiên, lưu loát",
+    "Thùy Dung": "Ngọt ngào, nhẹ nhàng",
+    "Ngọc Huyền": "Truyền cảm, thanh thoát",
+    "Ngọc Trân": "Mộc mạc, tha thiết",
+    "Ngọc Linh": "Tươi sáng, năng động",
+    "Đoan Trang": "Chững chạc, trang nhã",
+    "Thục Đoan": "Dịu dàng, sâu lắng",
+    "Mỹ Duyên": "Ngọt ngào, truyền cảm",
+    "Quỳnh Anh": "Tự tin, hiện đại",
+    "Kim Thanh": "Trầm ấm, đằm thắm",
+}
+
+
 def voice_options_for_language(language_code: str, ui_language: str, provider: str = "omnivoice"):
     if provider in {"vieneu", "vieneu-gpu"}:
         from linsub.core.vieneu_voices import VIENEU_VOICES
 
+        def _vieneu_label(name, gender, region):
+            g_str = "Nam" if gender == "male" else "Nữ"
+            reg_str = "Nam Bộ" if region == "Nam" else (region if region.startswith("miền") else f"miền {region}")
+            desc = VIENEU_VOICE_DESCRIPTIONS.get(name, "")
+            if desc and ui_language == "vi":
+                return f"{name} · {g_str} ({reg_str}) · {desc}"
+            return f"{name} · {g_str} · {region}"
+
         return ([{"voice": "vieneu:" + name,
-                 "label": f"{name} · {'Nam' if gender == 'male' else 'Nữ'} · {region}",
+                 "label": _vieneu_label(name, gender, region),
                  "category": "natural", "categoryLabel": "VieNeu"}
                 for name, gender, region in VIENEU_VOICES] + [{"voice": "vieneu:clone",
                     "label": "Giọng nhân bản của tôi" if ui_language == "vi" else "My cloned voice",
@@ -265,31 +302,31 @@ def localized_voice_label(label: str, ui_language: str) -> str:
         "Male narrator": "Nam kể chuyện",
         "Lively elder female": "Nữ lớn tuổi sinh động",
         "Lively elder male": "Nam lớn tuổi sinh động",
-        "Elder narrator": "Giọng kể lớn tuổi",
-        "Deep storyteller": "Giọng kể trầm",
+        "Elder narrator": "Nam lớn tuổi kể chuyện",
+        "Deep storyteller": "Nam kể chuyện trầm",
         "Soft whisper": "Thì thầm nhẹ",
-        "Deep whisper": "Thì thầm trầm",
+        "Deep whisper": "Nam thì thầm trầm",
         "Bright whisper": "Thì thầm sáng",
-        "Elder whisper": "Thì thầm lớn tuổi",
+        "Elder whisper": "Nam thì thầm lớn tuổi",
         "Young voice": "Giọng trẻ",
         "Cartoon voice": "Hoạt hình",
         "Soft child": "Trẻ em nhẹ",
         "Low child voice": "Trẻ em trầm",
         "Bright animation": "Hoạt hình sáng",
         "Soft animation": "Hoạt hình nhẹ",
-        "Low comic": "Hài trầm",
-        "Tech presenter": "Thuyết trình công nghệ",
-        "Show host": "Dẫn chương trình",
-        "Deep trailer": "Trailer trầm",
-        "Warm radio": "Radio ấm",
+        "Low comic": "Nam hài hước trầm",
+        "Tech presenter": "Nam thuyết trình công nghệ",
+        "Show host": "Nam dẫn chương trình",
+        "Deep trailer": "Nam trailer trầm",
+        "Warm radio": "Nam radio ấm",
         "Mystery whisper": "Thì thầm bí ẩn",
         "Gentle female": "Nữ dịu dàng",
         "Soft male": "Nam nhẹ nhàng",
         "Confident female": "Nữ tự tin",
         "Broadcast male": "Nam phát thanh",
         "Bright child": "Trẻ em sáng",
-        "Warm elder": "Lớn tuổi ấm",
+        "Warm elder": "Nam lớn tuổi ấm",
         "High comic": "Hài giọng cao",
-        "Documentary": "Thuyết minh tài liệu",
+        "Documentary": "Nam thuyết minh tài liệu",
     }
     return translations.get(label, label.replace("Female", "Nữ").replace("Male", "Nam"))

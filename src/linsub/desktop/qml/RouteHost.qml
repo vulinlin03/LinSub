@@ -39,7 +39,8 @@ StackLayout {
             "projects": 12,
             "settings": 13,
             "api-keys": 13,
-            "packages": 13
+            "packages": 13,
+            "merge": 14
         };
         return routes[route] === undefined ? 0 : routes[route];
     }
@@ -282,5 +283,16 @@ StackLayout {
         Layout.fillHeight: true
         Layout.margins: 0
         onNavigateRequested: function(route) { root.navigateRequested(route); }
+    }
+
+    Loader {
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.margins: 0
+        active: root.currentRoute === "merge"
+        asynchronous: true
+        sourceComponent: Component {
+            VideoMergePage {}
+        }
     }
 }

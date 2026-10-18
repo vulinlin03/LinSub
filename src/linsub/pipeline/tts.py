@@ -340,19 +340,60 @@ def generate_voice_parts(
         video_input = str(current_files.get("video_input") or "")
         video_root = os.path.dirname(os.path.dirname(video_input)) if video_input else ""
         source_segments_path = str(current_files.get("source_segments") or "")
-        if not source_segments_path and video_root:
-            source_segments_path = os.path.join(video_root, "temp", "source_segments.json")
-        source_audio_path = str(current_files.get("speech_audio") or "")
-        if not source_audio_path and video_root:
-            source_audio_path = os.path.join(video_root, "temp", "audio.wav")
+        if (not source_segments_path or not os.path.isfile(source_segments_path)) and video_root:
+            candidate = os.path.join(video_root, "temp", "source_segments.json")
+            if os.path.isfile(candidate):
+                source_segments_path = candidate
+        if (not source_segments_path or not os.path.isfile(source_segments_path)) and current_video:
+            try:
+                from linsub.pipeline.manual_tools import manual_artifacts
+                rec = manual_artifacts.active(current_video, "recognition")
+                if rec and (rec.get("resolved_outputs") or {}).get("segments"):
+                    candidate = str(rec["resolved_outputs"]["segments"])
+                    if os.path.isfile(candidate):
+                        source_segments_path = candidate
+            except Exception:
+                pass
         if source_segments_path and os.path.isfile(source_segments_path):
             with open(source_segments_path, "r", encoding="utf-8") as source_file:
                 loaded_source_segments = json.load(source_file)
             if isinstance(loaded_source_segments, list):
                 source_segments = loaded_source_segments
-        if not source_segments or not os.path.isfile(source_audio_path):
+        if not source_segments and isinstance(segments, list):
+            source_segments = segments
+
+        source_audio_path = str(current_files.get("speech_audio") or "")
+        if (not source_audio_path or not os.path.isfile(source_audio_path)) and video_root:
+            candidate = os.path.join(video_root, "temp", "audio.wav")
+            if os.path.isfile(candidate):
+                source_audio_path = candidate
+        if (not source_audio_path or not os.path.isfile(source_audio_path)) and current_files.get("source_audio"):
+            candidate = str(current_files.get("source_audio"))
+            if os.path.isfile(candidate):
+                source_audio_path = candidate
+        if (not source_audio_path or not os.path.isfile(source_audio_path)) and current_video:
+            try:
+                from linsub.pipeline.manual_tools import manual_artifacts
+                sep = manual_artifacts.active(current_video, "separation")
+                if sep and (sep.get("resolved_outputs") or {}).get("vocals"):
+                    candidate = str(sep["resolved_outputs"]["vocals"])
+                    if os.path.isfile(candidate):
+                        source_audio_path = candidate
+                if not source_audio_path or not os.path.isfile(source_audio_path):
+                    src = manual_artifacts.active(current_video, "source_audio")
+                    if src and (src.get("resolved_outputs") or {}).get("audio"):
+                        candidate = str(src["resolved_outputs"]["audio"])
+                        if os.path.isfile(candidate):
+                            source_audio_path = candidate
+            except Exception:
+                pass
+        if (not source_audio_path or not os.path.isfile(source_audio_path)) and video_input:
+            if os.path.isfile(video_input):
+                source_audio_path = video_input
+
+        if not source_segments or not source_audio_path or not os.path.isfile(source_audio_path):
             raise RuntimeError(
-                "Multiple-speaker mode requires the current source speech and timestamped source transcript."
+                "Chế độ phân vai Nam & Nữ cần có video/âm thanh nguồn và mốc thời gian phụ đề."
             )
         from linsub.pipeline.speaker_identity import IDENTITY_VERSION, _valid_map, prepare_speakers
 
@@ -377,14 +418,43 @@ def generate_voice_parts(
         if not _valid_map(identified, source_segments):
             raise RuntimeError("Không xác định được giọng từng người nói. Hãy chạy lại nhận diện người nói.")
         source_segments = identified
-        if backend == "vieneu":
-            # Copy mappings in memory only: the source-identity cache and
-            # existing OmniVoice target assignments remain unmodified.
-            source_segments = [{**entry, "speaker_voice": speaker_voice(entry["speaker_voice"]),
-                                **({"speaker_turns": [{**turn, "speaker_voice": speaker_voice(turn["speaker_voice"])}
-                                                       for turn in entry["speaker_turns"]]}
-                                   if entry.get("speaker_turns") else {})}
-                               for entry in source_segments]
+        speaker_overrides = dict(current_files.get("speaker_voice_overrides") or {})
+        male_override = str(speaker_overrides.get("male") or "").strip()
+        female_override = str(speaker_overrides.get("female") or "").strip()
+
+        from linsub.services.speaker_profiles import classify_gender
+
+        def _resolve_speaker_voice(item):
+            timbre = str(item.get("speaker_timbre_style") or "")
+            pitch = float(item.get("speaker_pitch_hz") or 0.0)
+            orig_voice = str(item.get("speaker_voice") or "")
+            g = classify_gender(timbre, pitch, orig_voice)
+            chosen = ""
+            if g == "male" and male_override:
+                chosen = male_override
+            elif g == "female" and female_override:
+                chosen = female_override
+            else:
+                spk = item.get("speaker_id")
+                if spk and spk in speaker_overrides:
+                    chosen = str(speaker_overrides[spk]).strip()
+                if not chosen:
+                    if orig_voice:
+                        chosen = orig_voice
+                    elif g == "male":
+                        chosen = "vieneu:Hải Đăng" if backend == "vieneu" else "omnivoice:male"
+                    else:
+                        chosen = "vieneu:Trúc Ly" if backend == "vieneu" else "omnivoice:female"
+            if backend == "vieneu" and not chosen.startswith("vieneu:"):
+                from linsub.core.vieneu_voices import speaker_voice
+                chosen = speaker_voice(chosen)
+            return chosen
+
+        source_segments = [{**entry, "speaker_voice": _resolve_speaker_voice(entry),
+                            **({"speaker_turns": [{**turn, "speaker_voice": _resolve_speaker_voice(turn)}
+                                                   for turn in entry["speaker_turns"]]}
+                               if entry.get("speaker_turns") else {})}
+                           for entry in source_segments]
         diagnostic_turns = [turn for source in source_segments for turn in (source.get('speaker_turns') or [source])]
         log_to_video(video_id, f"[SPEAKERS][POLICY] version={IDENTITY_VERSION}")
         voice_map = dict((s["speaker_id"], s["speaker_voice"]) for s in diagnostic_turns)

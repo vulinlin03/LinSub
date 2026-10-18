@@ -150,7 +150,16 @@ def transcribe(*args, **kwargs):
         context=context,
         isolate_source=True,
         progress_callback=(
-            (lambda status: callback(str(status.get("stage") or "processing"), str(status.get("detail") or "")))
+            (lambda status: (
+                callback(
+                    str(status.get("stage") or "processing"),
+                    str(status.get("detail") or ""),
+                    int(status.get("current") or 0),
+                    int(status.get("total") or 0),
+                )
+                if callback is not None
+                else None
+            ))
             if callback is not None
             else None
         ),
@@ -447,8 +456,9 @@ def _voice_clip_signatures(video, segments: list[dict[str, Any]]) -> list[str]:
                 reference,
                 reference_text,
                 recognition,
-                index if speaker_mode == "multiple" else 0,
-                *((segment.get('start'), segment.get('end')) if speaker_mode == 'multiple' and provider != 'edge' else ()),
+                *((segment.get('start'), segment.get('end'),
+                   tuple(sorted(dict(files.get("speaker_voice_overrides") or {}).items())))
+                  if speaker_mode == 'multiple' and provider != 'edge' else ()),
                 *_generation_token(video, "voice"),
                 _voice_cache_version(video),
                 *((EDGE_CACHE_VERSION,) if provider == "edge" else ()),
@@ -1705,7 +1715,13 @@ def _run_recognition(video, reporter) -> None:
                 str(staging / "source-segments.json"),
                 getattr(video, "source_language", "auto"),
                 video.video_id,
-                progress_callback=lambda _event, detail: reporter.update(30, "manual_recognition", detail),
+                progress_callback=lambda _event, detail, *args: reporter.update(
+                    10 + round(38 * min(1.0, args[0] / args[1])) if len(args) >= 2 and args[1] > 0 else 30,
+                    "manual_recognition",
+                    detail,
+                    args[0] if len(args) >= 1 else 0,
+                    args[1] if len(args) >= 2 else 0,
+                ),
                 model_name=getattr(video, "speech_recognition_model", "small"),
                 checkpoint_path=str(recognition_progress_path(video.video_id)),
                 checkpoint_key=expected,

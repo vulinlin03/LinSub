@@ -79,19 +79,5 @@ Item {
         }
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
     }
-
-        StudioButton {
-            id: autoAllBtn
-            Layout.fillWidth: true
-            text: AppController.isSelectedVideoProcessing && AppController.manualTargetTool === "auto_all"
-                ? qsTr("Đang chạy toàn bộ...")
-                : qsTr("Tự động chạy toàn bộ")
-            iconName: "play"
-            variant: "primary"
-            enabled: root.autoAllEnabled && !AppController.isSelectedVideoProcessing && !AppController.isSelectedVideoQueued
-            toolTipText: qsTr("Tự động thực hiện lần lượt từ đầu đến cuối (Tách giọng -> Dịch -> Giọng đọc -> Trộn âm -> Xuất video).")
-            showToolTip: true
-            onClicked: root.autoAllTriggered()
-        }
-    }
+}
 }

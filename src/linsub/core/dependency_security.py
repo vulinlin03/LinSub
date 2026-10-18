@@ -137,7 +137,10 @@ def install_lightning_checkpoint_guard() -> tuple[str, ...]:
     """
     guarded: list[str] = []
     for module_name in _LIGHTNING_SAVING_MODULES:
-        module = importlib.import_module(module_name)
+        try:
+            module = importlib.import_module(module_name)
+        except (ModuleNotFoundError, ImportError):
+            continue
         if _guard_lightning_saving_module(module):
             guarded.append(module_name)
     return tuple(guarded)

@@ -321,8 +321,8 @@ def run_file_request(request_path: Path) -> int:
         elif operation == "transcribe":
             from linsub.pipeline.transcribe import transcribe
 
-            def progress(stage, detail):
-                _status(status_path, stage=str(stage), detail=str(detail), current=0, total=0)
+            def progress(stage, detail, current=0, total=0):
+                _status(status_path, stage=str(stage), detail=str(detail), current=int(current), total=int(total))
 
             segments, language = transcribe(
                 str(payload["audio_path"]),
@@ -406,6 +406,18 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    import site
+    native_profile = os.environ.get("LINSUB_NATIVE_WINDOWS_USERPROFILE") or os.environ.get("USERPROFILE")
+    native_appdata = os.environ.get("LINSUB_NATIVE_WINDOWS_APPDATA")
+    candidates = []
+    ver = f"Python{sys.version_info.major}{sys.version_info.minor}"
+    if native_appdata:
+        candidates.append(Path(native_appdata) / "Python" / ver / "site-packages")
+    if native_profile:
+        candidates.append(Path(native_profile) / "AppData" / "Roaming" / "Python" / ver / "site-packages")
+    for cand in candidates:
+        if cand.is_dir() and str(cand) not in sys.path:
+            site.addsitedir(str(cand))
     parser = argparse.ArgumentParser()
     parser.add_argument("--rpc", action="store_true")
     parser.add_argument("--smoke", action="store_true")

@@ -1,3 +1,4 @@
+import bisect
 import gc
 import json
 import os
@@ -5,6 +6,8 @@ import re
 import statistics
 import tempfile
 import threading
+import wave
+from dataclasses import replace
 from pathlib import Path
 
 from linsub.config import HF_HOME, MODELS_DIR
@@ -221,6 +224,312 @@ def _transcribe_with_vad_recovery(asr_model, audio, profile, device: str, video_
             torch.cuda.empty_cache()
 
 
+def _long_form_cpu_profile(profile, audio_path: str, device: str, video_id: str):
+    """Use more physical CPU cores for long ASR only when RAM headroom is ample."""
+    if (device != "cpu" or getattr(profile, "key", "") != "cpu_low_memory"
+            or int(getattr(profile, "logical_cpu_count", 0) or 0) < 16):
+        return profile
+    try:
+        with wave.open(str(audio_path), "rb") as source:
+            duration = source.getnframes() / max(1, source.getframerate())
+    except (OSError, wave.Error, EOFError):
+        return profile
+    if duration < 3600.0:
+        return profile
+
+    from linsub.core.memory import GIB, memory_snapshot
+
+    snapshot = memory_snapshot()
+    if (snapshot.available_bytes is None or snapshot.available_bytes < 8 * GIB
+            or snapshot.commit_available_bytes is None or snapshot.commit_available_bytes < 8 * GIB):
+        return profile
+    threads = min(6, max(profile.cpu_threads, profile.logical_cpu_count // 2))
+    batch_size = max(profile.whisper_batch_size, 4)
+    if threads <= profile.cpu_threads and batch_size <= profile.whisper_batch_size:
+        return profile
+    log_to_video(
+        video_id,
+        f"Long-form CPU recognition: using {threads} Whisper threads and batch size {batch_size} "
+        "after confirming memory headroom.",
+        component="WHISPERX",
+    )
+    return replace(profile, cpu_threads=threads, whisper_batch_size=batch_size)
+
+
+def _format_time(seconds: float) -> str:
+    """Format seconds into HH:MM:SS or MM:SS."""
+    s = int(max(0, seconds))
+    h = s // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{sec:02d}"
+    return f"{m:02d}:{sec:02d}"
+
+
+def _report_progress(callback, stage: str, detail: str, current: int = 0, total: int = 0) -> None:
+    """Invoke progress callback with variable argument compatibility."""
+    if not callback:
+        return
+    try:
+        callback(stage, detail, current, total)
+    except TypeError:
+        try:
+            callback(stage, detail)
+        except TypeError:
+            pass
+
+
+def _find_optimal_audio_split(
+    audio: np.ndarray,
+    target_sample: int,
+    search_half_window_sec: float = 15.0,
+    min_slice_sec: float = 0.5,
+) -> int:
+    """Find the point of minimum acoustic energy (silence/pause) near target_sample.
+
+    This ensures cuts are placed between spoken phrases/sentences, never in the
+    middle of words.
+    """
+    sr = _AUDIO_SAMPLE_RATE
+    half_samples = int(search_half_window_sec * sr)
+    start_sample = max(0, target_sample - half_samples)
+    end_sample = min(len(audio), target_sample + half_samples)
+    window = audio[start_sample:end_sample]
+    slice_samples = int(min_slice_sec * sr)
+    if len(window) < slice_samples * 2:
+        return target_sample
+
+    step_samples = int(0.05 * sr)  # 50ms step
+    min_energy = float("inf")
+    best_offset = len(window) // 2
+
+    for i in range(0, len(window) - slice_samples, step_samples):
+        segment = window[i:i + slice_samples]
+        energy = float(np.mean(segment * segment))
+        if energy < min_energy:
+            min_energy = energy
+            best_offset = i + slice_samples // 2
+            if energy < 1e-6:
+                break
+
+    return start_sample + best_offset
+
+
+def _calculate_audio_chunks(
+    audio: np.ndarray,
+    target_chunk_sec: float = 600.0,
+) -> list[tuple[int, int]]:
+    """Split audio into chunks between silence points near target boundaries.
+
+    Returns a list of (start_sample, end_sample) tuples covering the full audio
+    without any gaps or overlapping audio.
+    """
+    sr = _AUDIO_SAMPLE_RATE
+    total_samples = len(audio)
+    target_samples = int(target_chunk_sec * sr)
+    if total_samples <= int(target_chunk_sec * 1.2 * sr):
+        return [(0, total_samples)]
+
+    splits = [0]
+    current = target_samples
+    while current < total_samples - int(target_chunk_sec * 0.4 * sr):
+        optimal = _find_optimal_audio_split(audio, current)
+        if optimal > splits[-1] + int(target_chunk_sec * 0.5 * sr):
+            splits.append(optimal)
+            current = optimal + target_samples
+        else:
+            splits.append(current)
+            current += target_samples
+
+    if splits[-1] < total_samples:
+        splits.append(total_samples)
+
+    chunks = [(splits[i], splits[i + 1]) for i in range(len(splits) - 1)]
+    return chunks
+
+
+def _transcribe_chunks(
+    asr_model,
+    audio: np.ndarray,
+    profile,
+    device: str,
+    video_id: str,
+    *,
+    checkpoint_path: str | None = None,
+    checkpoint_key: str = "",
+    progress_callback=None,
+) -> dict:
+    """Transcribe audio in progressive chunks with intermediate checkpointing."""
+    from linsub.utils.atomic_file import atomic_json
+
+    sr = _AUDIO_SAMPLE_RATE
+    total_samples = len(audio)
+    total_duration = total_samples / sr
+    # Long-form videos need shorter ASR/VAD jobs so the UI can report progress
+    # regularly and a pause/crash loses at most a few minutes of work.
+    target_chunk_sec = 300.0 if total_duration >= 3600.0 else 600.0
+    chunks = _calculate_audio_chunks(audio, target_chunk_sec=target_chunk_sec)
+    n_chunks = len(chunks)
+
+    if n_chunks == 1:
+        _report_progress(progress_callback, "transcribing", "Transcribing speech", 0, int(total_duration))
+        return _transcribe_with_vad_recovery(asr_model, audio, profile, device, video_id)
+
+    chunk_state_path = (
+        Path(checkpoint_path).with_name("recognition-chunks.json")
+        if checkpoint_path
+        else None
+    )
+
+    completed_chunks = []
+    detected_languages = []
+    if chunk_state_path and chunk_state_path.is_file():
+        try:
+            stored = json.loads(chunk_state_path.read_text(encoding="utf-8"))
+            if stored.get("key") == checkpoint_key and isinstance(stored.get("chunks"), list):
+                # Chunk sizing can change for long videos. Reuse only checkpoints
+                # whose time range still matches the current split plan.
+                for item in stored["chunks"]:
+                    try:
+                        index = int(item["index"])
+                        if index < 0:
+                            continue
+                        expected_start, expected_end = chunks[index]
+                        start_matches = abs(float(item["start_time"]) - expected_start / sr) <= 1 / sr
+                        end_matches = abs(float(item["end_time"]) - expected_end / sr) <= 1 / sr
+                        if start_matches and end_matches:
+                            completed_chunks.append(item)
+                    except (IndexError, KeyError, TypeError, ValueError):
+                        continue
+                detected_languages = [
+                    str(item.get("language")) for item in completed_chunks if item.get("language")
+                ]
+                log_to_video(
+                    video_id,
+                    f"Resuming chunked transcription: {len(completed_chunks)}/{n_chunks} chunks already completed.",
+                    component="WHISPERX",
+                )
+        except Exception as exc:
+            log_to_video(video_id, f"Could not read chunk checkpoint: {exc}; restarting transcription.", level="WARNING")
+            completed_chunks = []
+            detected_languages = []
+
+    completed_indices = {c["index"] for c in completed_chunks}
+
+    for idx, (start_sample, end_sample) in enumerate(chunks):
+        check_cancellation(video_id)
+        if idx in completed_indices:
+            continue
+
+        chunk_start_sec = start_sample / sr
+        chunk_end_sec = end_sample / sr
+        chunk_audio = audio[start_sample:end_sample]
+
+        percent = int(round((chunk_start_sec / total_duration) * 100)) if total_duration > 0 else 0
+        detail = (
+            f"Nhận dạng giọng nói: {_format_time(chunk_start_sec)} / {_format_time(total_duration)} "
+            f"({percent}%) [đoạn {idx + 1}/{n_chunks}]"
+        )
+
+        log_to_video(
+            video_id,
+            f"Transcribing audio chunk {idx + 1}/{n_chunks} "
+            f"({_format_time(chunk_start_sec)} - {_format_time(chunk_end_sec)} / {_format_time(total_duration)})...",
+            component="WHISPERX",
+        )
+        if progress_callback:
+            _report_progress(
+                progress_callback,
+                "transcribing",
+                detail,
+                current=int(chunk_start_sec),
+                total=int(total_duration),
+            )
+
+        chunk_result = _transcribe_with_vad_recovery(asr_model, chunk_audio, profile, device, video_id)
+        chunk_lang = chunk_result.get("language")
+        if chunk_lang:
+            detected_languages.append(chunk_lang)
+
+        chunk_segments = []
+        for raw_seg in chunk_result.get("segments", []):
+            text = str(raw_seg.get("text") or "").strip()
+            if not text:
+                continue
+            seg_start = round(float(raw_seg["start"]) + chunk_start_sec, 3)
+            seg_end = round(float(raw_seg["end"]) + chunk_start_sec, 3)
+            chunk_segments.append({
+                **raw_seg,
+                "start": seg_start,
+                "end": seg_end,
+                "language": chunk_lang or "en",
+                "language_confidence": 1.0,
+            })
+
+        completed_chunks.append({
+            "index": idx,
+            "start_time": chunk_start_sec,
+            "end_time": chunk_end_sec,
+            "segments": chunk_segments,
+            "language": chunk_lang,
+        })
+        completed_chunks.sort(key=lambda c: c["index"])
+
+        if chunk_state_path:
+            try:
+                atomic_json(
+                    chunk_state_path,
+                    {
+                        "key": checkpoint_key,
+                        "chunks": completed_chunks,
+                        "detected_languages": detected_languages,
+                    },
+                    ensure_ascii=False,
+                )
+            except Exception as exc:
+                log_to_video(video_id, f"Failed to persist chunk state: {exc}", level="WARNING")
+
+        log_to_video(
+            video_id,
+            f"Finished chunk {idx + 1}/{n_chunks}: {len(chunk_segments)} speech segments.",
+            component="WHISPERX",
+        )
+        completed_seconds = end_sample / sr
+        completed_percent = int(round((completed_seconds / total_duration) * 100)) if total_duration > 0 else 0
+        _report_progress(
+            progress_callback,
+            "transcribing",
+            f"Đã nhận dạng đến {_format_time(completed_seconds)} / {_format_time(total_duration)} "
+            f"({completed_percent}% âm thanh) · xong đoạn {idx + 1}/{n_chunks}",
+            current=int(completed_seconds),
+            total=int(total_duration),
+        )
+        gc.collect()
+
+    all_segments = []
+    for c in completed_chunks:
+        all_segments.extend(c["segments"])
+    all_segments.sort(key=lambda s: float(s["start"]))
+
+    if detected_languages:
+        from collections import Counter
+        primary_language = Counter(detected_languages).most_common(1)[0][0]
+    else:
+        primary_language = "en"
+
+    if chunk_state_path and chunk_state_path.is_file():
+        try:
+            chunk_state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return {
+        "segments": all_segments,
+        "language": primary_language,
+    }
+
+
 def _value(item, name: str, default=None):
     if isinstance(item, dict):
         return item.get(name, default)
@@ -245,48 +554,114 @@ def _merge_transcript_text(left: str, right: str) -> str:
     return f"{left} {right}"
 
 
-def _detect_segment_languages(asr_model, audio, segments, fallback_language: str, video_id: str):
-    """Detect one source language for each immutable sentence timestamp."""
+def _detect_segment_languages(
+    asr_model, audio, segments, fallback_language: str, video_id: str, progress_callback=None,
+):
+    """Detect sentence languages, batching long recordings into 30-second windows."""
     fallback_language = fallback_language or "en"
-    detected_segments = []
-    counts = {}
     audio_duration = len(audio) / _AUDIO_SAMPLE_RATE
+    detected_segments = [None] * len(segments)
+    counts = {}
 
-    for index, segment in enumerate(segments, start=1):
-        start = max(0.0, float(segment.get("start", 0.0)))
-        end = min(audio_duration, float(segment.get("end", start)))
-        language = fallback_language
-        confidence = 0.0
+    if audio_duration >= 3600.0:
+        # CTranslate2 language detection runs a Whisper encoder pass. Running it
+        # once per sentence repeats padded work thousands of times on a feature
+        # film. One bounded window keeps mixed-language changes reasonably
+        # local while reducing those encoder passes to at most one per 30 sec.
+        window_seconds = 30.0
+        windows = {}
+        for index, segment in enumerate(segments):
+            start = max(0.0, float(segment.get("start", 0.0)))
+            end = min(audio_duration, float(segment.get("end", start)))
+            midpoint = max(0.0, (start + end) / 2.0)
+            windows.setdefault(int(midpoint // window_seconds), []).append((index, segment))
 
-        if end > start:
-            clip = audio[int(start * _AUDIO_SAMPLE_RATE) : int(end * _AUDIO_SAMPLE_RATE)]
+        total_windows = len(windows)
+        for window_index, (bucket, items) in enumerate(sorted(windows.items()), start=1):
+            clip_start = bucket * window_seconds
+            clip_end = min(audio_duration, clip_start + window_seconds)
+            clip = audio[int(clip_start * _AUDIO_SAMPLE_RATE):int(clip_end * _AUDIO_SAMPLE_RATE)]
+            fallback_counts = {}
+            for _index, segment in items:
+                language = str(segment.get("language") or fallback_language)
+                fallback_counts[language] = fallback_counts.get(language, 0) + 1
+            window_fallback = max(fallback_counts, key=fallback_counts.get) if fallback_counts else fallback_language
+            language, confidence = window_fallback, 0.0
             try:
-                detected, confidence, _all_probabilities = asr_model.model.detect_language(
+                detected, detected_confidence, _all_probabilities = asr_model.model.detect_language(
                     audio=clip,
                     language_detection_threshold=0.0,
                 )
+                confidence = float(detected_confidence or 0.0)
                 if detected and confidence >= _SEGMENT_LANGUAGE_CONFIDENCE:
                     language = detected
                 else:
-                    log_to_video(
-                        video_id,
-                        f"Sentence {index} language confidence {confidence:.2f} is low; using '{fallback_language}'.",
-                    )
+                    language = window_fallback
             except Exception as exc:
                 log_to_video(
-                    video_id, f"Sentence {index} language detection failed; using '{fallback_language}': {exc}"
+                    video_id,
+                    f"Language detection for {_format_time(clip_start)} failed; using '{window_fallback}': {exc}",
                 )
 
-        segment_with_language = dict(segment)
-        segment_with_language["language"] = language
-        segment_with_language["language_confidence"] = round(float(confidence), 3)
-        detected_segments.append(segment_with_language)
-        counts[language] = counts.get(language, 0) + 1
+            for index, segment in items:
+                segment_with_language = dict(segment)
+                segment_with_language["language"] = language
+                segment_with_language["language_confidence"] = round(confidence, 3)
+                detected_segments[index] = segment_with_language
+                counts[language] = counts.get(language, 0) + 1
+            if progress_callback and (window_index % 10 == 0 or window_index == total_windows):
+                _report_progress(
+                    progress_callback,
+                    "detecting_languages",
+                    f"Nhận diện ngôn ngữ: {_format_time(clip_end)} / {_format_time(audio_duration)}",
+                    current=int(clip_end),
+                    total=int(audio_duration),
+                )
+    else:
+        for index, segment in enumerate(segments, start=1):
+            start = max(0.0, float(segment.get("start", 0.0)))
+            end = min(audio_duration, float(segment.get("end", start)))
+            language = fallback_language
+            confidence = 0.0
+
+            if end > start:
+                clip = audio[int(start * _AUDIO_SAMPLE_RATE) : int(end * _AUDIO_SAMPLE_RATE)]
+                try:
+                    detected, confidence, _all_probabilities = asr_model.model.detect_language(
+                        audio=clip,
+                        language_detection_threshold=0.0,
+                    )
+                    if detected and confidence >= _SEGMENT_LANGUAGE_CONFIDENCE:
+                        language = detected
+                    else:
+                        log_to_video(
+                            video_id,
+                            f"Sentence {index} language confidence {confidence:.2f} is low; using '{fallback_language}'.",
+                        )
+                except Exception as exc:
+                    log_to_video(
+                        video_id, f"Sentence {index} language detection failed; using '{fallback_language}': {exc}"
+                    )
+
+            segment_with_language = dict(segment)
+            segment_with_language["language"] = language
+            segment_with_language["language_confidence"] = round(float(confidence), 3)
+            detected_segments[index - 1] = segment_with_language
+            counts[language] = counts.get(language, 0) + 1
+            if progress_callback and (index % 50 == 0 or index == len(segments)):
+                current = int(end)
+                _report_progress(
+                    progress_callback,
+                    "detecting_languages",
+                    f"Nhận diện ngôn ngữ: {_format_time(current)} / {_format_time(audio_duration)}",
+                    current=current,
+                    total=int(audio_duration),
+                )
 
     if counts:
         summary = ", ".join(f"{language}={count}" for language, count in sorted(counts.items()))
         log_to_video(video_id, f"Detected languages per sentence: {summary}.")
-    return detected_segments
+    return [segment for segment in detected_segments if segment is not None]
 
 
 def _retranscription_language(segment: dict, primary_language: str) -> tuple[str, str | None]:
@@ -509,11 +884,17 @@ def _split_segment_proportionally(segment: dict) -> list[dict]:
 
 
 def _speech_windows_in_segment(
-    speech_regions: list[tuple[float, float]], start: float, end: float,
+    speech_regions: list[tuple[float, float]], start: float, end: float, *, region_starts=None,
 ) -> list[tuple[float, float]]:
     """Keep real pauses between short utterances in a long ASR segment."""
+    if region_starts is None:
+        relevant_regions = speech_regions
+    else:
+        first = max(0, bisect.bisect_left(region_starts, start) - 1)
+        stop = bisect.bisect_left(region_starts, end)
+        relevant_regions = speech_regions[first:stop]
     windows: list[list[float]] = []
-    for region_start, region_end in speech_regions:
+    for region_start, region_end in relevant_regions:
         left = max(start, region_start)
         right = min(end, region_end)
         if right - left < 0.25:
@@ -525,7 +906,18 @@ def _speech_windows_in_segment(
     return [(round(left, 3), round(right, 3)) for left, right in windows]
 
 
-def _split_long_unaligned_speech(asr_model, audio, segments, batch_size, video_id, language):
+def _split_long_unaligned_speech(
+    asr_model,
+    audio,
+    segments,
+    batch_size,
+    video_id,
+    language,
+    *,
+    progress_callback=None,
+    checkpoint_path: str | None = None,
+    checkpoint_key: str = "",
+):
     """Split long spans without a verified word aligner at real speech pauses.
 
     WhisperX merges VAD regions into up-to-30-second transcription chunks.
@@ -544,13 +936,58 @@ def _split_long_unaligned_speech(asr_model, audio, segments, batch_size, video_i
             offset=asr_model._vad_params["vad_offset"],
         )(scores)
         regions = [(float(region.start), float(region.end)) for region in speech.get_timeline()]
+        region_starts = [start for start, _end in regions]
     except Exception as exc:
         log_to_video(video_id, f"WARNING: Could not resolve {language} speech pauses: {exc}")
         return segments
 
-    result = []
-    for segment in segments:
+    from linsub.utils.atomic_file import atomic_json
+
+    split_state_path = (
+        Path(checkpoint_path).with_name("recognition-splits.json")
+        if checkpoint_path
+        else None
+    )
+
+    completed_results: list[dict] = []
+    start_index = 0
+    if split_state_path and split_state_path.is_file():
+        try:
+            stored = json.loads(split_state_path.read_text(encoding="utf-8"))
+            if (
+                stored.get("key") == checkpoint_key
+                and isinstance(stored.get("result"), list)
+                and isinstance(stored.get("next_index"), int)
+            ):
+                completed_results = stored["result"]
+                start_index = stored["next_index"]
+                log_to_video(
+                    video_id,
+                    f"Resuming sentence splitting checkpoint: {start_index}/{len(segments)} segments already processed.",
+                    component="WHISPERX",
+                )
+        except Exception as exc:
+            log_to_video(video_id, f"Could not read split checkpoint: {exc}; restarting split phase.", level="WARNING")
+            completed_results = []
+            start_index = 0
+
+    result = list(completed_results)
+    total_segments = len(segments)
+
+    for idx in range(start_index, total_segments):
         check_cancellation(video_id)
+        segment = segments[idx]
+
+        if progress_callback:
+            percent = int(round(((idx + 1) / total_segments) * 100)) if total_segments > 0 else 0
+            _report_progress(
+                progress_callback,
+                "splitting",
+                f"Đồng bộ tách câu {language}: {idx + 1}/{total_segments} ({percent}%)",
+                current=idx + 1,
+                total=total_segments,
+            )
+
         if str(segment.get("language")) != language:
             result.append(segment)
             continue
@@ -559,7 +996,7 @@ def _split_long_unaligned_speech(asr_model, audio, segments, batch_size, video_i
         if end - start <= 8.0:
             result.append(segment)
             continue
-        windows = _speech_windows_in_segment(regions, start, end)
+        windows = _speech_windows_in_segment(regions, start, end, region_starts=region_starts)
         if len(windows) < 2:
             result.append(segment)
             continue
@@ -587,6 +1024,27 @@ def _split_long_unaligned_speech(asr_model, audio, segments, batch_size, video_i
         else:
             log_to_video(video_id, f"Split {language} {end - start:.1f}s speech span into {len(utterances)} utterances.")
             result.extend(utterances)
+
+        if split_state_path:
+            try:
+                atomic_json(
+                    split_state_path,
+                    {
+                        "key": checkpoint_key,
+                        "next_index": idx + 1,
+                        "result": result,
+                    },
+                    ensure_ascii=False,
+                )
+            except Exception as exc:
+                log_to_video(video_id, f"Failed to persist split state: {exc}", level="WARNING")
+
+    if split_state_path and split_state_path.is_file():
+        try:
+            split_state_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     # VAD can identify a short, isolated utterance which the full-video ASR
     # omitted.  Recheck only uncovered speech windows, especially the tail of
     # short-form videos; a gap in the transcript otherwise becomes a gap in
@@ -595,14 +1053,37 @@ def _split_long_unaligned_speech(asr_model, audio, segments, batch_size, video_i
     return sorted([*result, *recovered], key=lambda item: (float(item["start"]), float(item["end"])))
 
 
+def _timeline_interval_index(segments):
+    ordered = sorted(segments, key=lambda item: float(item.get("start", 0.0)))
+    starts = []
+    prefix_max_ends = []
+    maximum_end = float("-inf")
+    for item in ordered:
+        starts.append(float(item.get("start", 0.0)))
+        maximum_end = max(maximum_end, float(item.get("end", item.get("start", 0.0))))
+        prefix_max_ends.append(maximum_end)
+    return ordered, starts, prefix_max_ends
+
+
 def _recover_uncovered_speech(asr_model, audio, segments, regions, batch_size, video_id, language):
     recovered = []
-    for left, right in regions:
+    ordered, starts, prefix_max_ends = _timeline_interval_index(segments)
+    for left, right in sorted(regions):
         check_cancellation(video_id)
         if not 0.35 <= right - left <= 8.0:
             continue
-        overlap = sum(max(0.0, min(right, float(item["end"])) - max(left, float(item["start"])))
-                      for item in [*segments, *recovered])
+        stop = bisect.bisect_left(starts, right)
+        begin = bisect.bisect_right(prefix_max_ends, left, 0, stop)
+        overlap = sum(
+            max(0.0, min(right, float(item["end"])) - max(left, float(item["start"])))
+            for item in ordered[begin:stop]
+        )
+        # VAD regions arrive in time order, so only the most recent recovered
+        # spans can overlap this region. This avoids rescanning all prior work.
+        for item in reversed(recovered):
+            if float(item["end"]) <= left:
+                break
+            overlap += max(0.0, min(right, float(item["end"])) - max(left, float(item["start"])))
         if overlap > 0.1 or overlap >= (right - left) * 0.2:
             continue
         clip = audio[int(left * _AUDIO_SAMPLE_RATE):int(right * _AUDIO_SAMPLE_RATE)]
@@ -810,6 +1291,7 @@ def _alignment_intrusion_detail(
     source_group: list[dict],
     aligned_group: list[dict],
     all_source_segments: list[dict],
+    timeline_index=None,
 ) -> str | None:
     """Describe alignment that newly intrudes into another spoken sentence.
 
@@ -827,11 +1309,20 @@ def _alignment_intrusion_detail(
         source_end = float(source.get("end", source_start))
         aligned_start = float(aligned.get("start", source_start))
         aligned_end = float(aligned.get("end", aligned_start))
-        for other in all_source_segments:
+        if timeline_index is None:
+            candidates = all_source_segments
+        else:
+            ordered, starts, prefix_max_ends = timeline_index
+            stop = bisect.bisect_left(starts, aligned_end)
+            begin = bisect.bisect_right(prefix_max_ends, aligned_start, 0, stop)
+            candidates = ordered[begin:stop]
+        for other in candidates:
             if id(other) in group_ids:
                 continue
             other_start = float(other.get("start", 0.0))
             other_end = float(other.get("end", other_start))
+            if other_end <= aligned_start:
+                continue
             source_overlap = max(0.0, min(source_end, other_end) - max(source_start, other_start))
             aligned_overlap = max(0.0, min(aligned_end, other_end) - max(aligned_start, other_start))
             if aligned_overlap > source_overlap + 0.05:
@@ -854,13 +1345,17 @@ def _resolve_context_alignments(groups: list[tuple[list[dict], list[dict] | None
     while True:
         check_cancellation(video_id)
         rejected = []
+        timeline_segments = [
+            segment
+            for index, (original, _aligned) in enumerate(groups)
+            for segment in (accepted[index] or original)
+        ]
+        timeline_index = _timeline_interval_index(timeline_segments)
         for index, (source, _candidate) in enumerate(groups):
             candidate = accepted[index]
             if candidate is None:
                 continue
-            neighbours = [segment for other, (original, _aligned) in enumerate(groups)
-                          if other != index for segment in (accepted[other] or original)]
-            detail = _alignment_intrusion_detail(source, candidate, neighbours)
+            detail = _alignment_intrusion_detail(source, candidate, timeline_segments, timeline_index)
             if detail:
                 rejected.append(index)
                 log_to_video(video_id, f"WARNING: Rejected context alignment at {source[0]['start']:.3f}s "
@@ -1088,8 +1583,14 @@ def _align_segments_by_language(audio, segments, device: str, video_id: str, pro
                 progress_callback("aligning", f"Aligning {language} subtitles")
             source_index = 0
             audio_duration = len(audio) / _AUDIO_SAMPLE_RATE
-            for group in language_groups:
+            total_groups = len(language_groups)
+            for g_idx, group in enumerate(language_groups):
                 check_cancellation(video_id)
+                if progress_callback and total_groups > 0 and (g_idx % 10 == 0 or g_idx == total_groups - 1):
+                    group_time = float(group[0].get("start", 0.0))
+                    percent = int(round((g_idx / total_groups) * 100))
+                    detail = f"Đồng bộ phụ đề {language}: {_format_time(group_time)} / {_format_time(audio_duration)} ({percent}%)"
+                    _report_progress(progress_callback, "aligning", detail, current=int(group_time), total=int(audio_duration))
                 group_start_index = source_index + 1
                 source_index += len(group)
                 group_end_index = source_index
@@ -1279,6 +1780,7 @@ def transcribe(
 
     profile = cpu_runtime_profile(runtime_profile(), force_cpu=device_preference == "cpu")
     device = "cuda" if profile.cuda_available and device_preference != "cpu" else "cpu"
+    profile = _long_form_cpu_profile(profile, audio_path, device, video_id)
     if model_name == "large-v3-turbo" and device == "cuda" and 0 < profile.total_vram_bytes < 5 * 1024**3:
         raise RuntimeError("Card 4 GB dùng Whisper Small trên GPU; Whisper Turbo cần thêm VRAM.")
     if model_name == "large-v3-turbo" and device != "cuda":
@@ -1326,7 +1828,18 @@ def transcribe(
         _constrain_four_gb_vad(asr_model, profile, device)
         if getattr(asr_model, "_linsub_vad_cpu", False):
             log_to_video(video_id, "Four GB GPU profile: Whisper runs on CUDA; VAD runs on CPU.")
+        if progress_callback:
+            progress_callback(
+                "loading_audio",
+                "Đang nạp âm thanh để nhận dạng; video dài có thể mất vài phút",
+            )
+        log_to_video(video_id, "Loading audio for speech recognition.", component="WHISPERX")
         audio = whisperx.load_audio(audio_path)
+        log_to_video(
+            video_id,
+            f"Audio ready for recognition: {len(audio) / _AUDIO_SAMPLE_RATE / 3600:.2f} hours.",
+            component="WHISPERX",
+        )
         if source_language != "auto":
             log_to_video(video_id, f"Ignoring legacy source language '{source_language}'; using automatic detection.")
 
@@ -1334,12 +1847,23 @@ def transcribe(
             detected_language, initial_segments = checkpoint.language, checkpoint.segments
         else:
             log_to_video(video_id, "Running WhisperX batched transcription with automatic language detection.")
-            if progress_callback:
-                progress_callback("transcribing", "Transcribing speech")
-            result = _transcribe_with_vad_recovery(asr_model, audio, profile, device, video_id)
+            result = _transcribe_chunks(
+                asr_model,
+                audio,
+                profile,
+                device,
+                video_id,
+                checkpoint_path=checkpoint_path,
+                checkpoint_key=checkpoint_key,
+                progress_callback=progress_callback,
+            )
             detected_language = result.get("language")
             initial_segments = [
-                {**segment, "language": detected_language or "en", "language_confidence": 1.0}
+                {
+                    **segment,
+                    "language": segment.get("language") or detected_language or "en",
+                    "language_confidence": float(segment.get("language_confidence", 1.0)),
+                }
                 for segment in result.get("segments", []) if segment.get("text", "").strip()
             ]
             if checkpoint and initial_segments:
@@ -1352,8 +1876,15 @@ def transcribe(
 
         if detected_language in {"zh", "vi"} and not (checkpoint and checkpoint.reached("recognized")):
             initial_segments = _split_long_unaligned_speech(
-                asr_model, audio, initial_segments, profile.whisper_batch_size, video_id,
+                asr_model,
+                audio,
+                initial_segments,
+                profile.whisper_batch_size,
+                video_id,
                 detected_language,
+                progress_callback=progress_callback,
+                checkpoint_path=checkpoint_path,
+                checkpoint_key=checkpoint_key,
             )
             initial_segments = _recover_speech_without_vad(
                 asr_model, audio, initial_segments, detected_language, video_id,
@@ -1380,6 +1911,7 @@ def transcribe(
             check_cancellation(video_id)
             source_segments = _detect_segment_languages(
                 asr_model, audio, sentence_segments, detected_language or "en", video_id,
+                progress_callback=progress_callback,
             )
             source_segments = _retranscribe_mixed_language_segments(
                 asr_model, audio, source_segments, detected_language or "en", video_id,

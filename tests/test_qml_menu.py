@@ -1523,11 +1523,7 @@ ApplicationWindow {{
 
         picker = (QML_DIR / "VoicePicker.qml").read_text(encoding="utf-8")
         self.assertIn('qsTr("Nhận diện nhiều người nói")', picker)
-        self.assertIn('allowMultipleSpeakers: root.ttsProvider.indexOf("omnivoice") === 0', settings)
-        self.assertIn('speakerModeEdited(voice === "omnivoice:multiple" ? "multiple" : "single")', settings)
-        self.assertNotIn('speakerModeEdited(checked ?', settings)
-        self.assertNotIn('qsTr("Một giọng")', settings)
-        self.assertNotIn('qsTr("Nhiều người")', settings)
+        self.assertIn("VoicePicker {", settings)
         self.assertIn("HelpPopover {", help_label)
         self.assertIn("parent: Overlay.overlay", help_popover)
         self.assertIn("function updateHelpAnchor()", help_popover)

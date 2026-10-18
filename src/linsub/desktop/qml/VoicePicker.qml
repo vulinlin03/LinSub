@@ -359,19 +359,28 @@ Control {
                             color: Theme.textMuted
                             font.pixelSize: Theme.caption
                         }
-                        AppIcon {
+                        Rectangle {
                             visible: specialDelegate.highlighted
-                            glyph: "\uE73E"
-                            iconColor: Theme.interactive
-                            iconSize: Theme.iconSmall
+                            Layout.preferredWidth: 20
+                            Layout.preferredHeight: 20
+                            radius: 10
+                            color: Theme.interactive
+                            Text {
+                                anchors.centerIn: parent
+                                text: "✓"
+                                color: Theme.textOnAccent
+                                font.family: Theme.fontFamily
+                                font.bold: true
+                                font.pixelSize: 12
+                            }
                         }
                     }
                     background: Rectangle {
                         color: specialDelegate.highlighted ? Theme.interactiveMuted
                             : specialDelegate.hovered ? Theme.surfaceMuted : "transparent"
                         radius: Theme.radiusSmall
-                        border.width: specialDelegate.visualFocus ? 1 : 0
-                        border.color: Theme.controlFocus
+                        border.width: specialDelegate.highlighted ? 1 : (specialDelegate.visualFocus ? 1 : 0)
+                        border.color: specialDelegate.highlighted ? Theme.interactive : Theme.controlFocus
                     }
                 }
             }
@@ -452,11 +461,14 @@ Control {
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
                         }
-                        AppIcon {
+                        Text {
                             visible: voiceDelegate.highlighted
-                            glyph: "\uE73E"
-                            iconColor: Theme.interactive
-                            iconSize: Theme.iconSmall
+                            text: "✓"
+                            color: "#10B981"
+                            font.family: Theme.fontFamily
+                            font.bold: true
+                            font.pixelSize: 15
+                            Layout.alignment: Qt.AlignVCenter
                         }
                         Item {
                             visible: root.previewEnabled && String(voiceDelegate.modelData.voice || "") !== "omnivoice:multiple"
@@ -492,9 +504,9 @@ Control {
                         }
                     }
                     background: Rectangle {
-                        color: voiceDelegate.highlighted ? Theme.interactiveMuted
-                            : (voiceDelegate.hovered ? Theme.surfaceMuted : "transparent")
+                        color: voiceDelegate.hovered ? Theme.surfaceMuted : "transparent"
                         radius: Theme.radiusSmall
+                        border.width: 0
                     }
                 }
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }

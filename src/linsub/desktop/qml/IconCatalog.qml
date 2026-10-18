@@ -48,6 +48,8 @@ QtObject {
         case "success": return "\uE73E"
         case "filter": return "\uE71C"
         case "sort": return "\uE8CB"
+        case "sortAsc": return "\uE74B"
+        case "sortDesc": return "\uE74A"
         case "chevronDown": return "\uE70D"
         case "chevronUp": return "\uE70E"
         case "video": return "\uE714"

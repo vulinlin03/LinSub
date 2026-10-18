@@ -297,12 +297,9 @@ def test_timeline_and_voice_track_and_auto_pipeline_button():
     assert '#10B981' in timeline
     assert '🎙' in timeline
 
-    # 3. 1-click Auto pipeline button in toolbar and navigator
-    assert 'objectName: "manualAutoAllButton"' in toolbar
-    assert 'qsTr("Tự động chạy toàn bộ")' in toolbar
-    assert 'onAutoAllRequested: {' in workspace
-    assert 'AppController.runAutoManualPipeline();' in workspace
-    assert 'id: autoAllBtn' in navigator
-    assert 'qsTr("Tự động chạy toàn bộ")' in navigator
-    assert 'onAutoAllTriggered: {' in workspace
+    # 3. Auto pipeline button removed from manual workspace toolbar and navigator as requested
+    assert 'objectName: "manualAutoAllButton"' not in toolbar
+    assert 'qsTr("Tự động chạy toàn bộ")' not in toolbar
+    assert 'id: autoAllBtn' not in navigator
+    assert 'qsTr("Tự động chạy toàn bộ")' not in navigator
 

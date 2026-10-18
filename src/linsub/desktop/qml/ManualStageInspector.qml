@@ -178,6 +178,13 @@ InspectorPanel {
         ]);
     }
 
+    function openSpeakerMappingDialog() {
+        speakerMappingDialogLoader.invoke("openForVideo", [
+            AppController.selectedVideoId,
+            AppController.ttsProvider
+        ]);
+    }
+
     function openBackgroundMusicLinkDialog() {
         backgroundMusicLinkDialogLoader.invoke("open", []);
     }
@@ -485,13 +492,28 @@ InspectorPanel {
         parent: root
         sourceComponent: Component {
             ManualVoiceDialog {
-                onConfirmed: function(provider, voice, scope, segmentId, speakerMode) {
+                onConfirmed: function(provider, voice, scope, segmentId, speakerMode, speakerOverrides) {
                     if (AppController.configureAndRunManualVoice(
-                            provider, voice, scope, segmentId, speakerMode))
+                            provider, voice, scope, segmentId, speakerMode, speakerOverrides || ({})))
                         root.settingsCommitted();
                 }
                 onCloneRequested: voiceCloneDialogLoader.invoke("openForSelectedVideo", [])
+                onSpeakerMappingRequested: function(provider) {
+                    speakerMappingDialogLoader.invoke("openForVideo", [
+                        AppController.selectedVideoId,
+                        provider || AppController.ttsProvider
+                    ]);
+                }
                 onClosed: voiceDialogLoader.release()
+            }
+        }
+    }
+    LazyDialogLoader {
+        id: speakerMappingDialogLoader
+        parent: root
+        sourceComponent: Component {
+            SpeakerVoiceMappingDialog {
+                onClosed: speakerMappingDialogLoader.release()
             }
         }
     }

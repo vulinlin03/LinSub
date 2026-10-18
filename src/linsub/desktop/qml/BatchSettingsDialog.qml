@@ -328,6 +328,7 @@ FloatingToolDialog {
                 editable: !AppController.isBatchRunning
                 cpuOnly: AppController.cpuOnly
                 hasSource: root.previewSources.length > 0
+                allowSpeakerMapping: false
                 showCloneAction: true
                 showMusicPlaybackSettings: true
                 speechRecognitionModel: root.draftSpeechRecognitionModel

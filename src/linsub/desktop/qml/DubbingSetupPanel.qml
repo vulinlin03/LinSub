@@ -10,6 +10,7 @@ InspectorPanel {
 
     title: qsTr("Cài đặt xử lý")
     showTitle: false
+    padding: Theme.space12
 
     function scheduleVideoSettingsSave() {
         if (AppController.hasSelectedVideo && !AppController.isSelectedVideoQueued) {
@@ -19,14 +20,12 @@ InspectorPanel {
         }
     }
 
-        ProcessingSettingsForm {
-            id: settingsForm
-            objectName: "autoProcessingSettingsForm"
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.minimumHeight: implicitHeight
-            Layout.alignment: Qt.AlignTop
-            availableHeight: Math.max(0, root.height - root.padding * 2)
+    ProcessingSettingsForm {
+        id: settingsForm
+        objectName: "autoProcessingSettingsForm"
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        availableHeight: Math.max(0, root.height - Theme.space24)
             editable: AppController.canEditSelectedVideo
             cpuOnly: AppController.cpuOnly
             hasSource: AppController.videoPath.length > 0
@@ -79,7 +78,12 @@ InspectorPanel {
                 AppController.previewVoiceSample(AppController.ttsProvider, value, AppController.targetLanguage)
             }
             onCloneVoiceRequested: voiceCloneDialogLoader.invoke("openForSelectedVideo", [])
+            speakerMaleVoice: AppController.speakerMaleVoice
+            speakerFemaleVoice: AppController.speakerFemaleVoice
+            onSpeakerMaleVoiceEdited: function(value) { AppController.speakerMaleVoice = value; root.scheduleVideoSettingsSave(); }
+            onSpeakerFemaleVoiceEdited: function(value) { AppController.speakerFemaleVoice = value; root.scheduleVideoSettingsSave(); }
             onSpeakerModeEdited: function(value) { AppController.speakerMode = value; root.scheduleVideoSettingsSave() }
+            onSpeakerMappingRequested: speakerMappingDialogLoader.invoke("openForSelectedVideo", [])
             onRemoveOriginalSubtitlesEdited: function(value) { AppController.removeOriginalSubtitles = value; root.scheduleVideoSettingsSave() }
             onSubtitleRemovalModeEdited: function(value) { AppController.originalSubtitleRemovalMode = value; root.scheduleVideoSettingsSave() }
             onSourceCoverRequested: sourceCoverDialogLoader.invoke("openForSource", [
@@ -101,7 +105,17 @@ InspectorPanel {
                 root.scheduleVideoSettingsSave()
             }
             onWatermarkRequested: watermarkDialogLoader.invoke("openForSelectedVideo", [])
+    }
+
+    LazyDialogLoader {
+        id: speakerMappingDialogLoader
+        parent: root
+        sourceComponent: Component {
+            SpeakerVoiceMappingDialog {
+                onClosed: speakerMappingDialogLoader.release()
+            }
         }
+    }
 
     LazyDialogLoader {
         id: audioMixDialogLoader

@@ -86,7 +86,15 @@ def run_external_task(
         worker = threading.Thread(target=execute, name=f"{command_name}-engine-task", daemon=True)
         worker.start()
         revision = None
-        deadline = time.monotonic() + MEDIA_PROCESS_TIMEOUT_SECONDS
+        last_activity = time.monotonic()
+        video_log_path = None
+        last_log_size = -1
+        try:
+            from linsub.services.video_store import get_video_logs_path
+
+            video_log_path = Path(get_video_logs_path(video_id))
+        except Exception:
+            pass
         while worker.is_alive():
             try:
                 check_cancellation(video_id)
@@ -94,20 +102,32 @@ def run_external_task(
                 pool.preempt(capability)
                 worker.join(timeout=2)
                 raise
-            if time.monotonic() >= deadline:
-                pool.preempt(capability)
-                worker.join(timeout=2)
-                raise RuntimeError(f"{command_name} engine task timed out.")
+            now = time.monotonic()
             try:
                 stat = status_path.stat()
                 current_revision = (stat.st_mtime_ns, stat.st_size)
                 if current_revision != revision:
                     revision = current_revision
+                    last_activity = now
                     status = json.loads(status_path.read_text(encoding="utf-8"))
                     if progress_callback is not None:
                         progress_callback(status)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 pass
+            if video_log_path:
+                try:
+                    current_log_size = video_log_path.stat().st_size
+                    if current_log_size != last_log_size:
+                        last_log_size = current_log_size
+                        last_activity = now
+                except OSError:
+                    pass
+            if now - last_activity >= MEDIA_PROCESS_TIMEOUT_SECONDS:
+                pool.preempt(capability)
+                worker.join(timeout=2)
+                raise RuntimeError(
+                    f"{command_name} engine task timed out after {int(now - last_activity)}s of inactivity."
+                )
             worker.join(timeout=0.15)
         if failure:
             raise RuntimeError(str(failure[0])) from failure[0]

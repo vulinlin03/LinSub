@@ -190,19 +190,6 @@ Rectangle {
             onEdited: function(value) { root.outputSpeedEdited(value); }
         }
         StudioButton {
-            objectName: "manualAutoAllButton"
-            visible: root.hasVideo
-            enabled: !root.exportBusy && !AppController.isSelectedVideoProcessing && !AppController.isSelectedVideoQueued
-            text: AppController.isSelectedVideoProcessing && AppController.manualTargetTool === "auto_all"
-                ? qsTr("Đang chạy toàn bộ...")
-                : (root.compactTools ? qsTr("Tự động") : qsTr("Tự động chạy toàn bộ"))
-            iconName: "play"
-            variant: "primary"
-            toolTipText: qsTr("Tự động thực hiện lần lượt từ đầu đến cuối (Tách giọng -> Dịch -> Giọng đọc -> Trộn âm -> Xuất video) theo cấu hình từ các phần.")
-            showToolTip: true
-            onClicked: root.autoAllRequested()
-        }
-        StudioButton {
             objectName: "manualExportButton"
             visible: root.hasVideo
             enabled: root.exportBusy || root.exportEnabled

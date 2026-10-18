@@ -101,7 +101,8 @@ def _voice_checkpoint_signature(video, transcript_state, *, segments=None):
         # Never mix clips produced by different source identity/anchor policies.
         ("omnivoice-stable-speaker-map-target-language-r7" if speaker_mode == "multiple"
          else "omnivoice-dedicated-short-anchor-or-source-speaker-r5"),
-        *((IDENTITY_VERSION,) if speaker_mode == "multiple" else ()),
+        *((IDENTITY_VERSION, tuple(sorted(dict(files.get("speaker_voice_overrides") or {}).items())))
+          if speaker_mode == "multiple" else ()),
         *((EDGE_CACHE_VERSION,) if provider == "edge" else ()),
         *(tuple(dict.fromkeys(version for item in (segments or []) if isinstance(item, dict)
                              for version in voice_text_policy_versions(str(item.get("text") or ""), language)))
@@ -191,13 +192,26 @@ def _recognize_for_translation(video, reporter, audio_path, output_path):
             reporter.update(48, "transcribing", "Reusing completed speech recognition")
             return segments, str(video.checkpoints.get("recognition_language") or segments[0].get("language") or "en")
     reporter.update(24, "transcribing", "Preparing Whisper speech recognition")
+    def report_recognition_progress(event, detail, *args):
+        current = args[0] if len(args) >= 1 else 0
+        total = args[1] if len(args) >= 2 else 0
+        if event == "transcribing" and total > 0:
+            prog = 25 + round(14 * min(1.0, current / total))
+        elif event == "splitting" and total > 0:
+            prog = 30 + round(9 * min(1.0, current / total))
+        elif event == "aligning" and total > 0:
+            prog = 40 + round(2 * min(1.0, current / total))
+        elif event == "detecting_languages" and total > 0:
+            prog = 43 + round(3 * min(1.0, current / total))
+        else:
+            prog = {"loading_model": 25, "transcribing": 29, "transcribed": 30, "splitting": 35,
+                    "loading_alignment": 40, "aligning": 41, "segmenting": 42,
+                    "detecting_languages": 46, "saved": 48}.get(event, 24)
+        reporter.update(prog, "transcribing", detail, current, total)
+
     result = transcribe(
         audio_path, output_path, video.source_language, video.video_id,
-        progress_callback=lambda event, detail: reporter.update(
-            {"loading_model": 25, "transcribing": 29, "transcribed": 39,
-             "loading_alignment": 40, "aligning": 41, "segmenting": 42,
-             "detecting_languages": 46, "saved": 48}.get(event, 24), "transcribing", detail,
-        ),
+        progress_callback=report_recognition_progress,
         model_name=_execution_models(video)["speech_recognition_model"],
         checkpoint_path=str(Path(output_path).with_name("recognition-progress.json")),
         checkpoint_key=signature,
@@ -676,8 +690,9 @@ def process_video_sync(
             warm_hymt2_worker(report_model_warmup)
 
         check_cancellation(video_id)
-        reporter.update(5, "extracting_audio", "Extracting source audio")
-        extract_audio(video_input, temp_audio_wav, video_id)
+        if not (os.path.isfile(temp_audio_wav) and os.path.getsize(temp_audio_wav) > 1024):
+            reporter.update(5, "extracting_audio", "Extracting source audio")
+            extract_audio(video_input, temp_audio_wav, video_id)
         reporter.update(12, "extracting_audio", "Source audio ready")
 
         transcribe_audio_target = temp_audio_wav
@@ -1087,13 +1102,13 @@ def _finish_after_translation(video, reporter, video_dir, original_audio_target,
         reporter.update(88, "rendering", "Rendering final video")
 
         def report_render_progress(fraction: float) -> None:
-            percent = max(0, min(100, round(fraction * 100)))
+            percent = max(0.0, min(100.0, fraction * 100))
             pipeline_progress = min(98, 88 + round(fraction * 10))
             reporter.update(
                 pipeline_progress,
                 "rendering",
-                f"Rendering final video ({percent}%)",
-                percent,
+                f"Rendering final video ({percent:.1f}%)",
+                round(percent),
                 100,
             )
 

@@ -1940,7 +1940,10 @@ def render_video(
                 except (OSError, UnicodeError):
                     continue
                 fraction = _ffmpeg_progress_fraction(progress_text, output_duration)
-                if fraction is not None and fraction - last_reported >= 0.005:
+                # Report small real advances. A half-percent threshold hides
+                # several minutes of work on multi-hour videos, especially on
+                # CPU or integrated-GPU encoding.
+                if fraction is not None and fraction - last_reported >= 0.001:
                     last_reported = fraction
                     if progress_callback:
                         progress_callback(fraction)

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtMultimedia
 import "."
 
 GridLayout {
@@ -14,8 +15,8 @@ GridLayout {
     property bool showCloneAction: false
     property bool showMusicPlaybackSettings: true
     property real availableHeight: 0
-    readonly property real voiceSpacing: Math.max(Theme.space8, Math.min(Theme.space20,
-        Theme.space8 + (availableHeight - 500) / 18))
+    readonly property real voiceSpacing: Math.max(Theme.space6, Math.min(Theme.space16,
+        Theme.space6 + (availableHeight - 500) / 20))
     readonly property real mediaSpacing: Math.max(3, Math.min(Theme.space16,
         3 + (availableHeight - 500) / 24))
     property string speechRecognitionModel: "small"
@@ -44,6 +45,52 @@ GridLayout {
     property string watermarkKind: "text"
     property string watermarkImagePath: ""
     property string watermarkVideoPath: ""
+    property bool allowSpeakerMapping: true
+    property string speakerMaleVoice: ""
+    property string speakerFemaleVoice: ""
+    property string testingVoice: ""
+
+    DefaultAudioOutput {
+        id: testAudioOutput
+        volume: 1.0
+    }
+
+    MediaPlayer {
+        id: testAudioPlayer
+        audioOutput: testAudioOutput
+        onMediaStatusChanged: {
+            if (mediaStatus === MediaPlayer.EndOfMedia) {
+                stop();
+                root.testingVoice = "";
+            }
+        }
+    }
+
+    function playVoiceTest(voice) {
+        if (!voice) return;
+        if (testingVoice === voice && testAudioPlayer.playbackState === MediaPlayer.PlayingState) {
+            testAudioPlayer.stop();
+            testingVoice = "";
+            return;
+        }
+        testAudioPlayer.stop();
+        testingVoice = voice;
+        AppController.previewVoiceSample(root.ttsProvider, voice, root.targetLanguage);
+        if (AppController.audioPreviewState === "ready" && AppController.audioPreviewSource.length > 0) {
+            testAudioPlayer.source = AppController.audioPreviewSource;
+            testAudioPlayer.play();
+        }
+    }
+
+    Connections {
+        target: AppController
+        function onAudioPreviewChanged() {
+            if (root.testingVoice.length > 0 && AppController.audioPreviewState === "ready" && AppController.audioPreviewSource.length > 0) {
+                testAudioPlayer.source = AppController.audioPreviewSource;
+                testAudioPlayer.play();
+            }
+        }
+    }
 
     signal speechRecognitionEdited(string value)
     signal translationModelEdited(string value)
@@ -53,6 +100,9 @@ GridLayout {
     signal ttsVoicePreviewRequested(string value)
     signal cloneVoiceRequested()
     signal speakerModeEdited(string value)
+    signal speakerMaleVoiceEdited(string value)
+    signal speakerFemaleVoiceEdited(string value)
+    signal speakerMappingRequested()
     signal removeOriginalSubtitlesEdited(bool value)
     signal subtitleRemovalModeEdited(string value)
     signal subtitleLayoutRequested()
@@ -120,7 +170,10 @@ GridLayout {
                 valueRole: "value"
                 model: root.speechRecognitionOptions
                 currentIndex: root.speechRecognitionIndex
-                onActivated: root.speechRecognitionEdited(currentValue)
+                onActivated: {
+                    root.speechRecognitionEdited(currentValue);
+                    currentIndex = Qt.binding(function() { return root.speechRecognitionIndex; });
+                }
             }
 
             SettingLabel {
@@ -141,7 +194,7 @@ GridLayout {
             }
             SearchableLanguageCombo {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 42
+                Layout.preferredHeight: 32
                 enabled: root.editable
                 options: root.targetLanguageOptions
                 selectedCode: root.targetLanguage
@@ -166,12 +219,32 @@ GridLayout {
             }
             SettingLabel {
                 Layout.fillWidth: true
+                text: qsTr("Chế độ phân vai")
+                helpText: qsTr("Đơn giọng: dùng 1 giọng cho video. Phân vai: AI tự động phân vai tất cả nhân vật Nam nói 1 giọng và nhân vật Nữ nói 1 giọng.")
+            }
+
+            SegmentedControl {
+                Layout.fillWidth: true
+                enabled: root.editable
+                currentValue: root.speakerMode
+                options: [
+                    { value: "single", label: qsTr("👤 Đơn giọng (1 người)") },
+                    { value: "multiple", label: qsTr("👥 Phân vai Nam & Nữ") }
+                ]
+                onActivated: function(value) {
+                    root.speakerModeEdited(value);
+                }
+            }
+
+            SettingLabel {
+                Layout.fillWidth: true
+                visible: root.speakerMode === "single"
                 text: qsTr("Giọng đọc")
-                helpText: qsTr("Nhận diện nhiều người nói chọn giọng thư viện ổn định cho từng người; kết quả có thể cần chỉnh lại. Giọng nhân bản dùng mẫu do bạn cung cấp.")
+                helpText: qsTr("Chọn giọng áp dụng cho toàn bộ video.")
             }
             Text {
                 Layout.fillWidth: true
-                visible: root.ttsProvider === "edge"
+                visible: root.ttsProvider === "edge" && root.speakerMode === "single"
                 text: qsTr("Cần Internet. Nội dung phụ đề được gửi tới Microsoft để tạo giọng.")
                 color: Theme.textMuted
                 font.pixelSize: TypeScale.metadata
@@ -179,19 +252,178 @@ GridLayout {
             }
             VoicePicker {
                 Layout.fillWidth: true
+                visible: root.speakerMode === "single"
                 enabled: root.editable
                 model: root.ttsVoiceOptions
-                currentValue: root.speakerMode === "multiple" ? "omnivoice:multiple" : root.ttsVoice
-                allowMultipleSpeakers: root.ttsProvider.indexOf("omnivoice") === 0 || root.ttsProvider.indexOf("vieneu") === 0
+                currentValue: root.ttsVoice
+                allowMultipleSpeakers: false
                 allowVoiceClone: root.showCloneAction && (root.ttsProvider.indexOf("omnivoice") === 0 || root.ttsProvider.indexOf("vieneu") === 0)
                 previewSource: root.voicePreviewSource
                 previewState: root.voicePreviewState
                 onSelected: function(voice) {
-                    root.speakerModeEdited(voice === "omnivoice:multiple" ? "multiple" : "single");
-                    root.ttsVoiceEdited(voice === "omnivoice:multiple" ? "omnivoice:female" : voice);
+                    root.ttsVoiceEdited(voice);
                 }
-                onPreviewRequested: function(voice) { root.ttsVoicePreviewRequested(voice) }
+                onPreviewRequested: function(voice) { root.playVoiceTest(voice); }
                 onCloneRequested: root.cloneVoiceRequested()
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: dualVoiceColumn.implicitHeight + Theme.space16
+                visible: root.speakerMode === "multiple"
+                radius: Theme.radius
+                color: Theme.surfaceElevated
+                border.width: 1
+                border.color: Theme.interactiveOutline
+
+                ColumnLayout {
+                    id: dualVoiceColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Theme.space8
+                    spacing: Theme.space6
+
+                    Text {
+                        text: qsTr("👥 Phân vai giọng theo giới tính:")
+                        color: Theme.interactiveHover
+                        font.family: Theme.fontFamily
+                        font.pixelSize: TypeScale.control
+                        font.weight: Font.DemiBold
+                    }
+
+                    // Male voice row
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space6
+
+                        Rectangle {
+                            Layout.preferredWidth: 26
+                            Layout.preferredHeight: 26
+                            radius: Theme.radiusSmall
+                            color: "#142540"
+                            border.width: 1
+                            border.color: "#2563eb"
+                            Text {
+                                anchors.centerIn: parent
+                                text: "👨"
+                                font.pixelSize: 14
+                            }
+                        }
+
+                        Text {
+                            text: qsTr("Giọng Nam:")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: TypeScale.control
+                            font.weight: Font.DemiBold
+                            Layout.preferredWidth: 68
+                        }
+
+                        StudioComboBox {
+                            Layout.fillWidth: true
+                            enabled: root.editable
+                            model: AppController.maleVoiceOptionsForProvider(root.ttsProvider)
+                            textRole: "label"
+                            valueRole: "voice"
+                            currentIndex: {
+                                for (let i = 0; i < model.length; ++i) {
+                                    if (String(model[i].voice || "") === String(root.speakerMaleVoice || ""))
+                                        return i;
+                                }
+                                return 0;
+                            }
+                            displayText: currentIndex >= 0 && currentIndex < count ? textAt(currentIndex) : (model && model.length > 0 ? String(model[0].label || "") : "")
+                            onActivated: {
+                                root.speakerMaleVoiceEdited(currentValue);
+                                root.playVoiceTest(currentValue);
+                                currentIndex = Qt.binding(function() {
+                                    for (let i = 0; i < model.length; ++i) {
+                                        if (String(model[i].voice || "") === String(root.speakerMaleVoice || ""))
+                                            return i;
+                                    }
+                                    return 0;
+                                });
+                            }
+                        }
+
+                        StudioButton {
+                            iconName: root.testingVoice === root.speakerMaleVoice && testAudioPlayer.playbackState === MediaPlayer.PlayingState ? "pause" : "play"
+                            text: root.testingVoice === root.speakerMaleVoice && testAudioPlayer.playbackState === MediaPlayer.PlayingState ? qsTr("Dừng") : qsTr("Nghe thử")
+                            variant: root.testingVoice === root.speakerMaleVoice && testAudioPlayer.playbackState === MediaPlayer.PlayingState ? "primary" : "secondary"
+                            enabled: root.editable
+                            onClicked: {
+                                root.playVoiceTest(root.speakerMaleVoice);
+                            }
+                        }
+                    }
+
+                    // Female voice row
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space6
+
+                        Rectangle {
+                            Layout.preferredWidth: 26
+                            Layout.preferredHeight: 26
+                            radius: Theme.radiusSmall
+                            color: "#341738"
+                            border.width: 1
+                            border.color: "#db2777"
+                            Text {
+                                anchors.centerIn: parent
+                                text: "👩"
+                                font.pixelSize: 14
+                            }
+                        }
+
+                        Text {
+                            text: qsTr("Giọng Nữ:")
+                            color: Theme.text
+                            font.family: Theme.fontFamily
+                            font.pixelSize: TypeScale.control
+                            font.weight: Font.DemiBold
+                            Layout.preferredWidth: 68
+                        }
+
+                        StudioComboBox {
+                            Layout.fillWidth: true
+                            enabled: root.editable
+                            model: AppController.femaleVoiceOptionsForProvider(root.ttsProvider)
+                            textRole: "label"
+                            valueRole: "voice"
+                            currentIndex: {
+                                for (let i = 0; i < model.length; ++i) {
+                                    if (String(model[i].voice || "") === String(root.speakerFemaleVoice || ""))
+                                        return i;
+                                }
+                                return 0;
+                            }
+                            displayText: currentIndex >= 0 && currentIndex < count ? textAt(currentIndex) : (model && model.length > 0 ? String(model[0].label || "") : "")
+                            onActivated: {
+                                root.speakerFemaleVoiceEdited(currentValue);
+                                root.playVoiceTest(currentValue);
+                                currentIndex = Qt.binding(function() {
+                                    for (let i = 0; i < model.length; ++i) {
+                                        if (String(model[i].voice || "") === String(root.speakerFemaleVoice || ""))
+                                            return i;
+                                    }
+                                    return 0;
+                                });
+                            }
+                        }
+
+                        StudioButton {
+                            iconName: root.testingVoice === root.speakerFemaleVoice && testAudioPlayer.playbackState === MediaPlayer.PlayingState ? "pause" : "play"
+                            text: root.testingVoice === root.speakerFemaleVoice && testAudioPlayer.playbackState === MediaPlayer.PlayingState ? qsTr("Dừng") : qsTr("Nghe thử")
+                            variant: root.testingVoice === root.speakerFemaleVoice && testAudioPlayer.playbackState === MediaPlayer.PlayingState ? "primary" : "secondary"
+                            enabled: root.editable
+                            onClicked: {
+                                root.playVoiceTest(root.speakerFemaleVoice);
+                            }
+                        }
+                    }
+                }
             }
 
         }
@@ -253,7 +485,7 @@ GridLayout {
             }
             SegmentedControl {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 38
+                Layout.preferredHeight: UiMetrics.controlHeight
                 enabled: root.editable
                 currentValue: root.removeOriginalSubtitles ? "remove" : "keep"
                 options: [
@@ -273,7 +505,7 @@ GridLayout {
                 }
                 SegmentedControl {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 38
+                    Layout.preferredHeight: UiMetrics.controlHeight
                     enabled: root.editable
                     currentValue: root.subtitleRemovalMode
                     options: [
@@ -295,7 +527,7 @@ GridLayout {
                 spacing: Theme.space8
                 SegmentedControl {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 38
+                    Layout.preferredHeight: UiMetrics.controlHeight
                     enabled: root.editable
                     currentValue: root.enableAudioSeparation ? "separated" : "original"
                     options: [

@@ -5,4 +5,5 @@ IconButton {
 
     controlSize: 30
     glyph: IconCatalog.glyph(iconName)
+    showToolTip: toolTipText.length > 0
 }

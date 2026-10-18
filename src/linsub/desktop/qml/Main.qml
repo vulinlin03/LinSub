@@ -37,6 +37,7 @@ ApplicationWindow {
     readonly property string routeDownloadWorkspace: "download-workspace"
     readonly property string routePublishProjects: "publish-projects"
     readonly property string routePublishWorkspace: "publish-workspace"
+    readonly property string routeMerge: "merge"
     property string currentRoute: routeHome
     property string workspaceReturnRoute: routeHome
     property var routeHistory: [routeHome]
@@ -110,6 +111,8 @@ ApplicationWindow {
             return "downloads";
         if (currentRoute === routePublishProjects)
             return "social";
+        if (currentRoute === routeMerge)
+            return "merge";
         return "home";
     }
 
@@ -125,7 +128,7 @@ ApplicationWindow {
     }
 
     function routeIsAvailable(route) {
-        if (route === routeHome || route === routeProjects || route === routeSettings || route === routeApiKeys || route === routePackages || route === routeSingleProjects || route === routeManualProjects || route === routeBatchProjects || route === routeDownloadProjects || route === routePublishProjects)
+        if (route === routeHome || route === routeProjects || route === routeSettings || route === routeApiKeys || route === routePackages || route === routeSingleProjects || route === routeManualProjects || route === routeBatchProjects || route === routeDownloadProjects || route === routePublishProjects || route === routeMerge)
             return true;
         if (!AppController.hasOpenProject)
             return false;
@@ -517,6 +520,8 @@ ApplicationWindow {
                         root.navigate(root.routeBatchProjects);
                     else if (section === "downloads")
                         root.navigate(root.routeDownloadProjects);
+                    else if (section === "merge")
+                        root.navigate(root.routeMerge);
                     else if (section === "social")
                         root.navigate(root.routePublishProjects);
                     else
@@ -568,7 +573,11 @@ ApplicationWindow {
                     : root.selectedTaskQueued ? "queued" : "ready"
             message: root.selectedTaskFailed ? AppController.selectedFailureMessage
                 : root.exportWorking ? (root.activeExportJob.status === "rendering"
-                    ? qsTr("Đang dựng video") : root.activeExportJob.status === "exporting"
+                    ? (AppController.isSelectedVideoProcessing
+                        && AppController.selectedVideoId === String(root.activeExportJob.videoId || "")
+                        && AppController.selectedProgressDetail.length > 0
+                        ? I18n.progressDetail(AppController.selectedProgressDetail)
+                        : qsTr("Đang dựng video")) : root.activeExportJob.status === "exporting"
                     ? qsTr("Đang hoàn thiện và lưu video") : qsTr("Đang chuẩn bị xuất"))
                 : root.videoProcessing ? (AppController.isSelectedVideoProcessing
                     ? AppController.selectedStageLabel
@@ -576,8 +585,13 @@ ApplicationWindow {
                 : root.selectedTaskPaused || root.selectedTaskQueued
                     ? I18n.progressDetail(AppController.selectedProgressDetail) : ""
             progress: root.exportWorking ? (root.activeExportJob.status === "exporting"
-                || Boolean(root.activeExportJob.progressMeasured)
-                ? Math.max(0, Math.min(1, Number(root.activeExportJob.progress || 0) / 100)) : -1)
+                ? Math.max(0, Math.min(1, Number(root.activeExportJob.progress || 0) / 100))
+                : Boolean(root.activeExportJob.progressMeasured)
+                    ? Math.max(0, Math.min(1, Number(root.activeExportJob.progress || 0) / 100))
+                    : AppController.isSelectedVideoProcessing
+                        && AppController.selectedVideoId === String(root.activeExportJob.videoId || "")
+                        ? Math.max(0, Math.min(1, Number(AppController.selectedProgress || 0) / 100))
+                        : -1)
                 : AppController.isSelectedVideoProcessing
                 && root.selectedProgressMeasured
                 && AppController.selectedStepId !== "waiting_for_models"

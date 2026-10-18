@@ -2,7 +2,10 @@ import os
 import tempfile
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
 
 from linsub.core.model_integrity import (
     HYMT2_CPU_FILE,
@@ -31,14 +34,21 @@ from linsub.core.paths import (
 # pickers.  Runtime caches are still redirected below before any heavy library
 # is imported.
 NATIVE_WINDOWS_USERPROFILE = os.environ.get("LINSUB_NATIVE_WINDOWS_USERPROFILE") or os.environ.get("USERPROFILE", "")
+if NATIVE_WINDOWS_USERPROFILE:
+    os.environ["LINSUB_NATIVE_WINDOWS_USERPROFILE"] = NATIVE_WINDOWS_USERPROFILE
+NATIVE_WINDOWS_APPDATA = os.environ.get("LINSUB_NATIVE_WINDOWS_APPDATA") or os.environ.get("APPDATA", "")
+if NATIVE_WINDOWS_APPDATA:
+    os.environ["LINSUB_NATIVE_WINDOWS_APPDATA"] = NATIVE_WINDOWS_APPDATA
 
 BASE_DIR = str(package_root())
 PROJECT_ROOT = str(project_root())
 _SMOKE_TEST = os.getenv("LINSUB_SMOKE_TEST") == "1"
 
-load_dotenv(dotenv_path=os.path.join(PROJECT_ROOT, ".env"), override=not _SMOKE_TEST)
+if load_dotenv is not None:
+    load_dotenv(dotenv_path=os.path.join(PROJECT_ROOT, ".env"), override=not _SMOKE_TEST)
 APP_DATA_DIR = str(app_data_dir())
-load_dotenv(dotenv_path=os.path.join(APP_DATA_DIR, ".env"), override=not _SMOKE_TEST)
+if load_dotenv is not None:
+    load_dotenv(dotenv_path=os.path.join(APP_DATA_DIR, ".env"), override=not _SMOKE_TEST)
 APP_DATA_DIR = str(app_data_dir())
 
 INSTALL_ROOT = str(install_root())
