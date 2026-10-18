@@ -2,10 +2,13 @@ import bisect
 import gc
 import json
 import os
+import queue
 import re
+import shutil
 import statistics
 import tempfile
 import threading
+import time
 import wave
 from dataclasses import replace
 from pathlib import Path
@@ -34,7 +37,7 @@ from linsub.core.model_integrity import (
     verify_whisper_turbo_model,
     verify_whisperx_vad_model,
 )
-from linsub.pipeline.process_registry import check_cancellation, communicate_process, is_cancelled
+from linsub.pipeline.process_registry import check_cancellation, is_cancelled, register_process, unregister_process
 from linsub.pipeline.timing_contract import TIMING_SOURCE
 from linsub.services.video_store import log_to_video
 from linsub.utils.ffmpeg import _binary, get_video_duration
@@ -106,6 +109,22 @@ def _load_whisper_model(device: str, compute_type: str, threads: int, model_name
 def _load_long_audio_memmap(audio_path: str, video_id: str, progress_callback=None):
     """Decode long recordings to a disk-backed float array instead of a RAM buffer."""
     os.makedirs(TMP_DIR, exist_ok=True)
+    try:
+        duration = get_video_duration(str(audio_path))
+    except Exception:
+        duration = 0.0
+    if duration > 0:
+        required_bytes = int(np.ceil(duration * _AUDIO_SAMPLE_RATE * np.dtype(np.float32).itemsize))
+        free_bytes = shutil.disk_usage(TMP_DIR).free
+        safety_margin = 512 * 1024**2
+        if free_bytes < required_bytes + safety_margin:
+            needed_gib = (required_bytes + safety_margin) / 1024**3
+            available_gib = free_bytes / 1024**3
+            raise RuntimeError(
+                f"Không đủ dung lượng trống để nhận dạng video dài: cần khoảng {needed_gib:.1f} GB "
+                f"cho file tạm, hiện còn {available_gib:.1f} GB trên ổ lưu dữ liệu LinSub. "
+                "Hãy giải phóng dung lượng hoặc chọn nơi cài/lưu tài nguyên có nhiều chỗ trống hơn."
+            )
     handle, mapped_path = tempfile.mkstemp(prefix="linsub-asr-", suffix=".f32", dir=TMP_DIR)
     os.close(handle)
     try:
@@ -121,30 +140,100 @@ def _load_long_audio_memmap(audio_path: str, video_id: str, progress_callback=No
             "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-i", str(audio_path), "-map", "0:a:0", "-vn",
             "-ac", "1", "-ar", str(_AUDIO_SAMPLE_RATE),
-            "-c:a", "pcm_f32le", "-f", "f32le", mapped_path,
+            "-c:a", "pcm_f32le", "-f", "f32le",
+            "-stats_period", "1", "-progress", "pipe:1", "-nostats", mapped_path,
         ]
         process = _whisper_audio.subprocess.Popen(
             command,
-            stdout=_whisper_audio.subprocess.DEVNULL,
-            stderr=_whisper_audio.subprocess.PIPE,
+            stdout=_whisper_audio.subprocess.PIPE,
+            stderr=_whisper_audio.subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
+            bufsize=1,
             creationflags=getattr(_whisper_audio.subprocess, "CREATE_NO_WINDOW", 0),
         )
-        _stdout, stderr = communicate_process(
-            video_id,
-            process,
-            label="Long audio preparation",
-            timeout_seconds=MEDIA_PROCESS_TIMEOUT_SECONDS,
-        )
+        progress_lines: queue.Queue[str] = queue.Queue()
+        reader_done = threading.Event()
+
+        def collect_progress():
+            try:
+                for line in process.stdout:
+                    progress_lines.put(line)
+            finally:
+                reader_done.set()
+
+        reader = threading.Thread(target=collect_progress, name="linsub-audio-progress", daemon=True)
+        reader.start()
+        registered = False
+        deadline = time.monotonic() + MEDIA_PROCESS_TIMEOUT_SECONDS
+        last_reported_second = -1
+        try:
+            register_process(video_id, process)
+            registered = True
+            while process.poll() is None or not reader_done.is_set() or not progress_lines.empty():
+                check_cancellation(video_id)
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Long audio preparation timed out after {MEDIA_PROCESS_TIMEOUT_SECONDS} seconds."
+                    )
+                try:
+                    line = progress_lines.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.strip().split("=", 1)
+                if key not in {"out_time_ms", "out_time_us"}:
+                    continue
+                try:
+                    current_seconds = max(0, int(value)) / 1_000_000
+                except ValueError:
+                    continue
+                current_second = int(current_seconds)
+                if duration > 0 and current_second > last_reported_second:
+                    last_reported_second = current_second
+                    percent = min(99, int(current_seconds * 100 / duration))
+                    _report_progress(
+                        progress_callback,
+                        "loading_audio",
+                        f"Chuẩn bị âm thanh dài: {_format_time(current_seconds)} / "
+                        f"{_format_time(duration)} ({percent}%)",
+                        current=min(int(current_seconds), int(duration)),
+                        total=int(duration),
+                    )
+            process.wait(timeout=1)
+        except Exception:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                pass
+            raise
+        finally:
+            reader.join(timeout=1)
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
+            if registered:
+                unregister_process(video_id, process, force=process.poll() is None)
         check_cancellation(video_id)
         size = os.path.getsize(mapped_path)
         if process.returncode != 0 or size == 0 or size % np.dtype(np.float32).itemsize:
-            detail = " ".join((stderr or "").split())[-700:]
             raise RuntimeError(
-                "Không thể chuẩn bị âm thanh dài để nhận dạng."
-                + (f" FFmpeg: {detail}" if detail else "")
+                "Không thể chuẩn bị âm thanh dài để nhận dạng bằng FFmpeg "
+                f"(mã thoát {process.returncode})."
+            )
+        if progress_callback and duration > 0:
+            _report_progress(
+                progress_callback,
+                "loading_audio",
+                f"Chuẩn bị âm thanh dài: {_format_time(duration)} / {_format_time(duration)} (100%)",
+                current=int(duration),
+                total=int(duration),
             )
         return np.memmap(mapped_path, dtype=np.float32, mode="r+", shape=(size // 4,)), mapped_path
     except Exception:
@@ -161,7 +250,7 @@ def _load_recognition_audio(audio_path: str, video_id: str, progress_callback=No
         duration = get_video_duration(str(audio_path))
     except Exception:
         duration = 0.0
-    if duration >= 15 * 60:
+    if duration <= 0 or duration >= 15 * 60:
         return _load_long_audio_memmap(audio_path, video_id, progress_callback)
     return whisperx.load_audio(audio_path), None
 
@@ -637,7 +726,12 @@ def _detect_segment_languages(
         # once per sentence repeats padded work thousands of times on a feature
         # film. One bounded window keeps mixed-language changes reasonably
         # local while reducing those encoder passes to at most one per 30 sec.
-        window_seconds = 30.0
+        if audio_duration >= 12 * 3600.0:
+            window_seconds = 120.0
+        elif audio_duration >= 3 * 3600.0:
+            window_seconds = 60.0
+        else:
+            window_seconds = 30.0
         windows = {}
         for index, segment in enumerate(segments):
             start = max(0.0, float(segment.get("start", 0.0)))
