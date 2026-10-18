@@ -10,7 +10,7 @@ import wave
 from dataclasses import replace
 from pathlib import Path
 
-from linsub.config import HF_HOME, MODELS_DIR
+from linsub.config import HF_HOME, MEDIA_PROCESS_TIMEOUT_SECONDS, MODELS_DIR, TMP_DIR
 
 # Local VAD must not enable Pyannote's opt-out usage telemetry.
 os.environ["PYANNOTE_METRICS_ENABLED"] = "false"
@@ -34,9 +34,10 @@ from linsub.core.model_integrity import (
     verify_whisper_turbo_model,
     verify_whisperx_vad_model,
 )
-from linsub.pipeline.process_registry import check_cancellation, is_cancelled
+from linsub.pipeline.process_registry import check_cancellation, communicate_process, is_cancelled
 from linsub.pipeline.timing_contract import TIMING_SOURCE
 from linsub.services.video_store import log_to_video
+from linsub.utils.ffmpeg import _binary, get_video_duration
 from linsub.utils.media_subprocess import _MediaSubprocess
 
 # WhisperX decodes via its own subprocess.run, not our FFmpeg helpers.
@@ -100,6 +101,69 @@ def _load_whisper_model(device: str, compute_type: str, threads: int, model_name
         local_files_only=local_only,
         vad_options={"model_fp": str(vad_model_path)},
     )
+
+
+def _load_long_audio_memmap(audio_path: str, video_id: str, progress_callback=None):
+    """Decode long recordings to a disk-backed float array instead of a RAM buffer."""
+    os.makedirs(TMP_DIR, exist_ok=True)
+    handle, mapped_path = tempfile.mkstemp(prefix="linsub-asr-", suffix=".f32", dir=TMP_DIR)
+    os.close(handle)
+    try:
+        check_cancellation(video_id)
+        if progress_callback:
+            _report_progress(
+                progress_callback,
+                "loading_audio",
+                "Đang chuẩn bị âm thanh dài theo cách tiết kiệm RAM",
+            )
+        command = [
+            _binary("ffmpeg"),
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-i", str(audio_path), "-map", "0:a:0", "-vn",
+            "-ac", "1", "-ar", str(_AUDIO_SAMPLE_RATE),
+            "-c:a", "pcm_f32le", "-f", "f32le", mapped_path,
+        ]
+        process = _whisper_audio.subprocess.Popen(
+            command,
+            stdout=_whisper_audio.subprocess.DEVNULL,
+            stderr=_whisper_audio.subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(_whisper_audio.subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        _stdout, stderr = communicate_process(
+            video_id,
+            process,
+            label="Long audio preparation",
+            timeout_seconds=MEDIA_PROCESS_TIMEOUT_SECONDS,
+        )
+        check_cancellation(video_id)
+        size = os.path.getsize(mapped_path)
+        if process.returncode != 0 or size == 0 or size % np.dtype(np.float32).itemsize:
+            detail = " ".join((stderr or "").split())[-700:]
+            raise RuntimeError(
+                "Không thể chuẩn bị âm thanh dài để nhận dạng."
+                + (f" FFmpeg: {detail}" if detail else "")
+            )
+        return np.memmap(mapped_path, dtype=np.float32, mode="r+", shape=(size // 4,)), mapped_path
+    except Exception:
+        try:
+            os.remove(mapped_path)
+        except OSError:
+            pass
+        raise
+
+
+def _load_recognition_audio(audio_path: str, video_id: str, progress_callback=None):
+    """Keep short-clip startup fast; memory-map recordings long enough to pressure RAM."""
+    try:
+        duration = get_video_duration(str(audio_path))
+    except Exception:
+        duration = 0.0
+    if duration >= 15 * 60:
+        return _load_long_audio_memmap(audio_path, video_id, progress_callback)
+    return whisperx.load_audio(audio_path), None
 
 
 def _constrain_four_gb_vad(asr_model, profile, device: str) -> None:
@@ -368,7 +432,12 @@ def _transcribe_chunks(
     total_duration = total_samples / sr
     # Long-form videos need shorter ASR/VAD jobs so the UI can report progress
     # regularly and a pause/crash loses at most a few minutes of work.
-    target_chunk_sec = 300.0 if total_duration >= 3600.0 else 600.0
+    if profile.key == "cpu_minimum":
+        target_chunk_sec = 120.0
+    elif profile.key in {"cpu_low_memory", "cuda_low_memory"}:
+        target_chunk_sec = 180.0
+    else:
+        target_chunk_sec = 300.0 if total_duration >= 3600.0 else 600.0
     chunks = _calculate_audio_chunks(audio, target_chunk_sec=target_chunk_sec)
     n_chunks = len(chunks)
 
@@ -906,6 +975,47 @@ def _speech_windows_in_segment(
     return [(round(left, 3), round(right, 3)) for left, right in windows]
 
 
+def _speech_regions_in_audio_windows(asr_model, audio, video_id: str, progress_callback=None):
+    """Run Pyannote VAD on bounded windows so long recordings never become one tensor."""
+    from whisperx.vads.pyannote import Binarize
+
+    vad = asr_model.vad_model
+    duration = len(audio) / _AUDIO_SAMPLE_RATE
+    window_seconds = 180.0
+    regions: list[tuple[float, float]] = []
+    for start in range(0, int(np.ceil(duration)), int(window_seconds)):
+        check_cancellation(video_id)
+        end = min(duration, start + window_seconds)
+        first_sample = int(start * _AUDIO_SAMPLE_RATE)
+        last_sample = int(end * _AUDIO_SAMPLE_RATE)
+        waveform = vad.preprocess_audio(audio[first_sample:last_sample])
+        scores = vad({"waveform": waveform, "sample_rate": _AUDIO_SAMPLE_RATE})
+        speech = Binarize(
+            max_duration=8.0,
+            onset=asr_model._vad_params["vad_onset"],
+            offset=asr_model._vad_params["vad_offset"],
+        )(scores)
+        for region in speech.get_timeline():
+            left = max(float(start), float(start) + float(region.start))
+            right = min(float(end), float(start) + float(region.end))
+            if right <= left:
+                continue
+            if regions and left - regions[-1][1] <= 0.35:
+                regions[-1] = (regions[-1][0], right)
+            else:
+                regions.append((left, right))
+        del speech, scores, waveform
+        if progress_callback:
+            _report_progress(
+                progress_callback,
+                "splitting",
+                f"Quét vùng có lời: {_format_time(end)} / {_format_time(duration)}",
+                current=int(end),
+                total=int(duration),
+            )
+    return regions
+
+
 def _split_long_unaligned_speech(
     asr_model,
     audio,
@@ -926,18 +1036,25 @@ def _split_long_unaligned_speech(
     translation, subtitle and TTS slot.
     """
     try:
-        from whisperx.vads.pyannote import Binarize
+        if len(audio) / _AUDIO_SAMPLE_RATE >= 15 * 60:
+            regions = _speech_regions_in_audio_windows(
+                asr_model, audio, video_id, progress_callback=progress_callback,
+            )
+        else:
+            from whisperx.vads.pyannote import Binarize
 
-        vad = asr_model.vad_model
-        scores = vad({"waveform": vad.preprocess_audio(audio), "sample_rate": _AUDIO_SAMPLE_RATE})
-        speech = Binarize(
-            max_duration=8.0,
-            onset=asr_model._vad_params["vad_onset"],
-            offset=asr_model._vad_params["vad_offset"],
-        )(scores)
-        regions = [(float(region.start), float(region.end)) for region in speech.get_timeline()]
+            vad = asr_model.vad_model
+            scores = vad({"waveform": vad.preprocess_audio(audio), "sample_rate": _AUDIO_SAMPLE_RATE})
+            speech = Binarize(
+                max_duration=8.0,
+                onset=asr_model._vad_params["vad_onset"],
+                offset=asr_model._vad_params["vad_offset"],
+            )(scores)
+            regions = [(float(region.start), float(region.end)) for region in speech.get_timeline()]
         region_starts = [start for start, _end in regions]
     except Exception as exc:
+        if is_cancelled(video_id):
+            raise
         log_to_video(video_id, f"WARNING: Could not resolve {language} speech pauses: {exc}")
         return segments
 
@@ -1798,6 +1915,7 @@ def transcribe(
     asr_model = None
     using_warm_model = False
     audio = None
+    audio_memmap_path = None
     try:
         log_to_video(video_id, "Loading WhisperX transcription model.")
         if progress_callback:
@@ -1834,7 +1952,9 @@ def transcribe(
                 "Đang nạp âm thanh để nhận dạng; video dài có thể mất vài phút",
             )
         log_to_video(video_id, "Loading audio for speech recognition.", component="WHISPERX")
-        audio = whisperx.load_audio(audio_path)
+        audio, audio_memmap_path = _load_recognition_audio(
+            audio_path, video_id, progress_callback=progress_callback,
+        )
         log_to_video(
             video_id,
             f"Audio ready for recognition: {len(audio) / _AUDIO_SAMPLE_RATE / 3600:.2f} hours.",
@@ -2004,5 +2124,16 @@ def transcribe(
         if asr_model is not None and not using_warm_model:
             del asr_model
         if audio is not None:
+            audio_mapping = getattr(audio, "_mmap", None)
             del audio
+            if audio_mapping is not None:
+                try:
+                    audio_mapping.close()
+                except OSError:
+                    pass
+        if audio_memmap_path:
+            try:
+                os.remove(audio_memmap_path)
+            except OSError:
+                pass
         _release_cuda(video_id, "WhisperX cleanup")
