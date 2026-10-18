@@ -454,17 +454,21 @@ def _find_optimal_audio_split(
         return target_sample
 
     step_samples = int(0.05 * sr)  # 50ms step
-    min_energy = float("inf")
-    best_offset = len(window) // 2
+    candidate_starts = np.arange(0, len(window) - slice_samples, step_samples, dtype=np.int64)
+    # Evaluate all 0.5-second pause candidates from one prefix sum. The old
+    # loop re-squared overlapping audio hundreds of times at every cut; on a
+    # 20-hour recording that made planning hundreds of chunks needlessly slow.
+    squared = np.square(window, dtype=np.float32)
+    cumulative_energy = np.empty(len(squared) + 1, dtype=np.float64)
+    cumulative_energy[0] = 0.0
+    np.cumsum(squared, dtype=np.float64, out=cumulative_energy[1:])
+    energies = (
+        cumulative_energy[candidate_starts + slice_samples] - cumulative_energy[candidate_starts]
+    ) / slice_samples
 
-    for i in range(0, len(window) - slice_samples, step_samples):
-        segment = window[i:i + slice_samples]
-        energy = float(np.mean(segment * segment))
-        if energy < min_energy:
-            min_energy = energy
-            best_offset = i + slice_samples // 2
-            if energy < 1e-6:
-                break
+    quiet_candidates = np.flatnonzero(energies < 1e-6)
+    best_index = int(quiet_candidates[0]) if quiet_candidates.size else int(np.argmin(energies))
+    best_offset = int(candidate_starts[best_index]) + slice_samples // 2
 
     return start_sample + best_offset
 
