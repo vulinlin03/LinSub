@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -26,6 +27,26 @@ MODELS = {
     "gemini-3.8-flash": "Gemini 3.8 Flash",
 }
 _ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+_TRANSLATION_NEIGHBOR_CONTEXT_SENTENCES = 4
+_TRANSLATION_NEIGHBOR_CONTEXT_CHARACTERS = 1200
+
+
+def _bounded_neighbor_context(texts: list[str], start: int, end: int, *, before: bool) -> list[str]:
+    """Select nearby subtitle lines by character count, preserving CJK text intact."""
+    if before:
+        indexes = list(range(max(0, start - _TRANSLATION_NEIGHBOR_CONTEXT_SENTENCES), start))
+        indexes.reverse()
+    else:
+        indexes = range(end, min(len(texts), end + _TRANSLATION_NEIGHBOR_CONTEXT_SENTENCES))
+    selected = []
+    used_characters = 0
+    for index in indexes:
+        text = str(texts[index] or "")
+        if not text or used_characters + len(text) > _TRANSLATION_NEIGHBOR_CONTEXT_CHARACTERS:
+            continue
+        selected.append(text)
+        used_characters += len(text)
+    return list(reversed(selected)) if before else selected
 _KEYS_PATH = Path(RUNTIME_DATA_DIR) / "gemini-api-keys.json"
 _KEYS_LOCK = threading.RLock()
 
@@ -151,17 +172,186 @@ def clear_key() -> bool:
     return remove_key("legacy")
 
 
-def _chunks(texts: list[str]):
+def _chunks(texts: list[str], *, max_segments: int = 24):
     chunk: list[tuple[int, str]] = []
     chars = 0
     for index, text in enumerate(texts):
-        if chunk and (len(chunk) >= 24 or chars + len(text) > 4000):
+        # Tăng giới hạn ký tự mỗi chunk để ít yêu cầu Gemini hơn
+        if chunk and (len(chunk) >= max_segments or chars + len(text) > 8000):
             yield chunk
             chunk, chars = [], 0
         chunk.append((index, text))
         chars += len(text)
     if chunk:
         yield chunk
+
+
+def _story_text_chunks(texts: list[str], limit: int = 12000):
+    """Group ordered transcript lines into bounded story-analysis requests."""
+    group: list[tuple[int, str]] = []
+    size = 0
+    for index, text in enumerate(texts):
+        line_size = len(text) + 32
+        if group and size + line_size > limit:
+            yield group
+            group, size = [], 0
+        group.append((index, text))
+        size += line_size
+    if group:
+        yield group
+
+
+def _request_story_note(
+    entries: list[tuple[int, str]], *, key: str, model: str,
+    source_language: str, target_language: str, video_id: str = "",
+    merge_notes: bool = False,
+) -> str:
+    ordered = [{"id": index, "text": text} for index, text in entries]
+    task = (
+        "Merge the chronological notes into one concise guide for translating the entire story. "
+        "Keep stable character names, relationships, forms of address, important terms, plot facts, "
+        "and tone. Resolve duplicate spellings consistently. Do not add facts not supported by the notes."
+        if merge_notes else
+        "Read these chronological transcript lines as part of one continuous story. Write a compact guide "
+        "in " + target_language + " with the plot events, character names and relationships, stable name "
+        "renderings, recurring terms, and tone. Mark uncertain or speech-recognition-corrupted details as "
+        "uncertain instead of guessing. Preserve chronology and do not translate the dialogue line by line."
+    )
+    language_hint = (
+        "These are already summarized notes in the target language."
+        if merge_notes else "Source language: " + source_language + "."
+    )
+    payload = {
+        "systemInstruction": {"parts": [{"text": (
+            task + " " + language_hint + " Keep the guide concise and useful for "
+            "consistent subtitle and dubbing translation."
+        )}]},
+        "contents": [{"role": "user", "parts": [{
+            "text": json.dumps(ordered, ensure_ascii=False, separators=(",", ":")),
+        }]}],
+        "generationConfig": {
+            "temperature": 0.1,
+            "candidateCount": 1,
+            "maxOutputTokens": 1200,
+            "thinkingConfig": {"thinkingLevel": "minimal" if model in {"gemini-3.1-flash-lite", "gemini-3.5-flash-lite"} else "low", "includeThoughts": False},
+        },
+    }
+    url = _ENDPOINT.format(model=model)
+    for attempt in range(3):
+        check_cancellation(video_id)
+        answer = None
+        started = time.perf_counter()
+        try:
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            outgoing = request.Request(
+                url, data=body,
+                headers={"Content-Type": "application/json", "x-goog-api-key": key},
+                method="POST",
+            )
+            with request.urlopen(outgoing, timeout=90) as response:
+                answer = json.load(response)
+            candidates = answer.get("candidates") if isinstance(answer, dict) else None
+            content = candidates[0].get("content") if candidates and isinstance(candidates[0], dict) else None
+            parts = content.get("parts") if isinstance(content, dict) else None
+            note = "\n".join(
+                part["text"] for part in parts or []
+                if isinstance(part, dict) and not part.get("thought") and isinstance(part.get("text"), str)
+            ).strip()
+            if not note:
+                raise ValueError("Gemini returned an empty story guide.")
+            if video_id:
+                log_to_video(
+                    video_id,
+                    f"Gemini {model}: phase={'guide_merge' if merge_notes else 'guide'}, "
+                    f"elapsed={time.perf_counter() - started:.2f}s, attempt={attempt + 1}/3, "
+                    f"sentences={len(entries)}, {_response_diagnostic(answer)}.",
+                    component="TRANSLATE",
+                )
+            check_cancellation(video_id)
+            return note[:5000]
+        except error.HTTPError as exc:
+            if exc.code in {408, 429, 500, 502, 503, 504} and attempt < 2:
+                _retry_delay(min(8, 2 ** attempt + random.random()), video_id)
+                continue
+            raise RuntimeError(f"Gemini không tạo được hướng dẫn ngữ cảnh (HTTP {exc.code}).") from None
+        except (error.URLError, TimeoutError):
+            if attempt < 2:
+                _retry_delay(min(8, 2 ** attempt + random.random()), video_id)
+                continue
+            raise RuntimeError("Không kết nối được Gemini khi phân tích mạch truyện.") from None
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+            if attempt < 2:
+                _retry_delay(min(8, 2 ** attempt + random.random()), video_id)
+                continue
+            raise RuntimeError("Gemini không trả về hướng dẫn ngữ cảnh hợp lệ.") from None
+    raise RuntimeError("Gemini không phản hồi khi phân tích mạch truyện.")
+
+
+def create_story_guide(
+    texts: list[str], *, model: str, source_language: str, target_language: str,
+    video_id: str = "", cache_path: str | Path | None = None, status_callback=None,
+) -> str:
+    """Create and locally cache a compact, whole-story translation guide."""
+    signature = hashlib.sha256(json.dumps({
+        "texts": texts, "model": model, "source_language": source_language,
+        "target_language": target_language,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    cache = Path(cache_path) if cache_path else None
+    cached_notes: list[str] = []
+    if cache is not None:
+        try:
+            stored = json.loads(cache.read_text(encoding="utf-8"))
+            if (stored.get("signature") == signature and isinstance(stored.get("guide"), str)
+                    and stored["guide"].strip()):
+                return stored["guide"]
+            if (stored.get("signature") == signature and isinstance(stored.get("notes"), list)
+                    and all(isinstance(note, str) for note in stored["notes"])):
+                cached_notes = stored["notes"]
+        except (OSError, ValueError, AttributeError, UnicodeDecodeError):
+            pass
+
+    key = active_key()
+    if not key:
+        raise RuntimeError("Chưa có Gemini API key. Vào Cài đặt → Quản lý API Key để thêm key.")
+    groups = list(_story_text_chunks(texts))
+    notes = list(cached_notes[:len(groups)])
+    for index, group in enumerate(groups[len(notes):], len(notes) + 1):
+        detail = f"Analyzing story context: part {index}/{len(groups)}."
+        log_to_video(video_id, detail, component="TRANSLATE")
+        if status_callback:
+            status_callback(detail)
+        notes.append(_request_story_note(
+            group, key=key, model=model, source_language=source_language,
+            target_language=target_language, video_id=video_id,
+        ))
+        if cache is not None:
+            _save_story_guide_cache(cache, signature, notes)
+    while len(notes) > 1:
+        merged: list[str] = []
+        for group in _story_text_chunks(notes):
+            merged.append(_request_story_note(
+                group, key=key, model=model, source_language=source_language,
+                target_language=target_language, video_id=video_id, merge_notes=True,
+            ))
+        notes = merged
+    guide = notes[0] if notes else "No story context available."
+    if cache is not None:
+        _save_story_guide_cache(cache, signature, notes, guide=guide)
+    return guide
+
+
+def _save_story_guide_cache(cache: Path, signature: str, notes: list[str], *, guide: str = "") -> None:
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=".story-guide-", suffix=".tmp", dir=cache.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump({"signature": signature, "notes": notes, "guide": guide}, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, cache)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 class _ResponseError(ValueError):
@@ -251,12 +441,22 @@ def _request_chunk(
     chunk: list[tuple[int, str]], *, key: str, model: str,
     source_language: str, target_language: str, video_id: str = "",
     speech_durations: list[float] | None = None,
+    story_guide: str = "",
+    source_quality: list[dict | None] | None = None,
+    context_before: list[str] | None = None,
+    context_after: list[str] | None = None,
 ) -> list[str]:
     entries = [{"id": index, "text": text} for index, text in chunk]
     for entry in entries:
         index = entry["id"]
         if speech_durations is not None:
             entry.update(timing_budget(speech_durations[index], target_language))
+        quality = source_quality[index] if source_quality is not None else None
+        if isinstance(quality, dict) and quality.get("status") == "review":
+            entry["asr_quality"] = {
+                "status": "review",
+                "reasons": [str(reason) for reason in quality.get("reasons", []) if str(reason)],
+            }
     timing = (
         " Each entry's speech_seconds is its original speaking duration. Use brief, natural spoken phrasing "
         "that fits a similar duration; target_spoken_units/spoken_unit are soft length guidance, not output fields. "
@@ -268,11 +468,37 @@ def _request_chunk(
         "systemInstruction": {"parts": [{"text": (
             "Translate each subtitle into " + target_language + ". Source language: "
             + source_language + ". Keep the same id and order. Preserve meaning, "
-            "speaker tone, names and punctuation. Return only concise translations; "
+            "speaker tone, names and punctuation. Source text may contain speech-recognition errors; "
+            "when the whole-story guide strongly supports an obvious correction, use that interpretation; "
+            "otherwise stay close to the supplied words and do not guess. For Chinese, do not "
+            "translate personal names character-by-character as ordinary words; render names by pronunciation. "
+            "Read all entries in this chronological batch together as context. Infer stable names, "
+            "relationships, forms of address and recurring terms from the entire batch and keep them consistent. "
+            + ("Use the whole-story guide below to keep plot facts and terminology consistent across the video. "
+               if story_guide else "Use only facts supported by the complete batch; do not invent missing story details. ")
+            + "The request includes up to four neighboring source sentences before and after this batch, "
+            "limited to 1,200 characters per side; use them "
+            "only to resolve references, names, technical terms, numbers and poetic phrases. Entries marked "
+            "asr_quality=review have weak Whisper decoding diagnostics: use nearby context to correct only an "
+            "obvious recognition error, preserve uncertain source meaning, and never invent missing words. "
+             "For Chinese-to-Vietnamese, preserve the speaker's grammatical person and established form of address. "
+             "Words such as 我们/咱们 mean 'we'; do not infer an uncle/aunt or other family role from them. "
+             "Use 'chúng ta' or a clearly established matching register such as 'bọn ta'; use 'chú/bọn chú' only "
+             "when the Chinese source explicitly establishes that kinship role. Preserve every numeral and its "
+             "multiplier when converting units: one 甲子 is 60 years, so 十个甲子 is 600 years, not 60. "
+             "For literary or poetic Chinese, translate the supported meaning naturally rather than rendering "
+             "obvious ASR homophones as literal nonsense; if the intended phrase remains uncertain, stay conservative. "
+            + "Translate only each entry's text; never translate context or guide text as a subtitle. "
+            "Return concise, natural spoken translations; "
             "never merge, omit or invent a subtitle." + timing
+            + (" Whole-story guide: " + story_guide if story_guide else "")
         )}]},
         "contents": [{"role": "user", "parts": [{
-            "text": json.dumps(entries, ensure_ascii=False, separators=(",", ":")),
+            "text": json.dumps({
+                "context_before": list(context_before or []),
+                "entries": entries,
+                "context_after": list(context_after or []),
+            }, ensure_ascii=False, separators=(",", ":")),
         }]}],
         "generationConfig": {
             "temperature": 0.1,
@@ -296,6 +522,7 @@ def _request_chunk(
     for attempt in range(3):
         check_cancellation(video_id)
         answer = None
+        started = time.perf_counter()
         try:
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             outgoing = request.Request(
@@ -307,11 +534,20 @@ def _request_chunk(
                 answer = json.load(response)
             # A valid response already paid for must reach the durable batch
             # callback before honoring Pause. Never publish it as final here.
-            return _parse_translations(answer, chunk)
+            values = _parse_translations(answer, chunk)
+            if video_id:
+                log_to_video(
+                    video_id,
+                    f"Gemini {model}: phase=translation, elapsed={time.perf_counter() - started:.2f}s, "
+                    f"attempt={attempt + 1}/3, sentences={len(chunk)}, {_response_diagnostic(answer)}.",
+                    component="TRANSLATE",
+                )
+            return values
         except error.HTTPError as exc:
             if video_id:
                 log_to_video(
-                    video_id, f"Gemini {model}: HTTP {exc.code}, attempt {attempt + 1}/3.",
+                    video_id, f"Gemini {model}: HTTP {exc.code}, attempt {attempt + 1}/3, "
+                    f"elapsed={time.perf_counter() - started:.2f}s.",
                     component="TRANSLATE", level="WARNING",
                 )
             if exc.code in {408, 429, 500, 502, 503, 504} and attempt < 2:
@@ -337,6 +573,12 @@ def _request_chunk(
                 ) from None
             raise RuntimeError(f"Gemini không xử lý được yêu cầu (HTTP {exc.code}).") from None
         except (error.URLError, TimeoutError):
+            if video_id:
+                log_to_video(
+                    video_id, f"Gemini {model}: connection failure, attempt={attempt + 1}/3, "
+                    f"elapsed={time.perf_counter() - started:.2f}s.",
+                    component="TRANSLATE", level="WARNING",
+                )
             if attempt < 2:
                 _retry_delay(min(8, 2 ** attempt + random.random()), video_id)
                 continue
@@ -350,6 +592,7 @@ def _request_chunk(
             if video_id:
                 log_to_video(video_id, f"Gemini {model}: response={failure.reason}, {_response_diagnostic(answer)}, "
                              f"attempt={attempt + 1}/3, sentences={len(chunk)}, "
+                             f"elapsed={time.perf_counter() - started:.2f}s, "
                              f"token_limit={payload['generationConfig']['maxOutputTokens']}, retry={retry}.",
                              component="TRANSLATE", level="WARNING")
             if not retry:
@@ -364,7 +607,12 @@ def translate_texts(
     target_language: str, video_id: str, progress_callback=None,
     initial_translations: list[str | None] | None = None, result_callback=None,
     speech_durations: list[float] | None = None,
+    story_guide: str = "",
+    max_batch_segments: int = 24,
+    source_quality: list[dict | None] | None = None,
 ) -> list[str]:
+    if source_quality is not None and len(source_quality) != len(texts):
+        raise ValueError("Each source sentence must have one ASR quality slot.")
     if speech_durations is not None:
         if len(speech_durations) != len(texts):
             raise ValueError("Each source sentence must have a speech duration.")
@@ -378,33 +626,77 @@ def translate_texts(
     output = list(initial_translations) if initial_translations is not None else [None] * len(texts)
     if len(output) != len(texts):
         raise ValueError("Each source sentence must have a translation slot.")
-    for chunk in _chunks(texts):
+    if type(max_batch_segments) is not int or max_batch_segments < 1:
+        raise ValueError("Gemini translation batch size must be a positive integer.")
+
+    # Gom các chunk cần dịch trước, bỏ những câu đã có bản dịch.
+    pending_chunks: list[list[tuple[int, str]]] = []
+    for chunk in _chunks(texts, max_segments=max_batch_segments):
         chunk = [(index, text) for index, text in chunk if output[index] is None]
-        if not chunk:
-            continue
-        check_cancellation(video_id)
-        detail = f"Sending Gemini translation batch: sentences {chunk[0][0] + 1}-{chunk[-1][0] + 1} of {len(texts)}."
+        if chunk:
+            pending_chunks.append(chunk)
+    if not pending_chunks:
+        return output
+    for chunk in pending_chunks:
+        detail = (
+            f"Sending Gemini translation batch: sentences {chunk[0][0] + 1}-"
+            f"{chunk[-1][0] + 1} of {len(texts)}."
+        )
         log_to_video(video_id, detail, component="TRANSLATE", level="INFO")
         if progress_callback:
-            progress_callback(sum(value is not None for value in output), len(texts), detail)
+            progress_callback(
+                sum(value is not None for value in output), len(texts), detail,
+            )
+
+    # Các chunk độc lập với nhau nên gửi song song: mỗi chunk là một yêu cầu
+    # Gemini độc lập, chạy đồng thời để không phải chờ nối tiếp.
+    # Giới hạn số luồng để không vượt quota tốc độ của Gemini.
+    max_workers = min(8, len(pending_chunks))
+    chunk_results: dict[int, list[str]] = {}
+    chunk_lock = threading.Lock()
+
+    def _translate_one(chunk: list[tuple[int, str]]) -> None:
+        """Gửi 1 chunk tới Gemini và lưu kết quả."""
+        check_cancellation(video_id)
         values = _request_chunk(
             chunk, key=key, model=model,
             source_language=source_language, target_language=target_language, video_id=video_id,
             speech_durations=speech_durations,
+            story_guide=story_guide,
+            source_quality=source_quality,
+            context_before=_bounded_neighbor_context(
+                texts, chunk[0][0], chunk[-1][0] + 1, before=True,
+            ),
+            context_after=_bounded_neighbor_context(
+                texts, chunk[0][0], chunk[-1][0] + 1, before=False,
+            ),
         )
-        # Pause preserves a just-received batch; Cancel must not write new
-        # progress into a workspace that is being discarded/deleted.
-        if not is_paused(video_id):
+        with chunk_lock:
+            chunk_results[chunk[0][0]] = values
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_translate_one, chunk): chunk for chunk in pending_chunks}
+        for future in as_completed(futures):
+            chunk = futures[future]
+            # Ném lỗi của chunk này ra ngoài để dừng cả lượt dịch.
+            future.result()
+            values = chunk_results.get(chunk[0][0], [])
+            # Pause preserves a just-received batch; Cancel must not write new
+            # progress into a workspace that is being discarded/deleted.
+            if not is_paused(video_id):
+                check_cancellation(video_id)
+            for (index, _), value in zip(chunk, values):
+                output[index] = value
+            if result_callback:
+                result_callback([index for index, _ in chunk], values)
             check_cancellation(video_id)
-        for (index, _), value in zip(chunk, values):
-            output[index] = value
-        if result_callback:
-            result_callback([index for index, _ in chunk], values)
-        check_cancellation(video_id)
-        log_to_video(
-            video_id, f"Gemini translated {chunk[-1][0] + 1} of {len(texts)} sentences.",
-            component="TRANSLATE", level="INFO",
-        )
-        if progress_callback:
-            progress_callback(sum(value is not None for value in output), len(texts), "Đang dịch bằng Gemini")
+            log_to_video(
+                video_id, f"Gemini translated {chunk[-1][0] + 1} of {len(texts)} sentences.",
+                component="TRANSLATE", level="INFO",
+            )
+            if progress_callback:
+                progress_callback(
+                    sum(value is not None for value in output), len(texts), "Đang dịch bằng Gemini"
+                )
     return output

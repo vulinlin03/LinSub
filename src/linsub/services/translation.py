@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 import os
 import queue
 import re
@@ -42,6 +43,11 @@ LANGUAGE_NAMES = {
     "fil": "Filipino",
 }
 
+_GEMINI_INLINE_CONTEXT_MAX_SEGMENTS = 32
+# Tăng ngưỡng ký tự để video ngắn (dưới ~5 phút) dùng 1 yêu cầu Gemini duy nhất
+# thay vì tách thành nhiều batch nối tiếp.
+_GEMINI_INLINE_CONTEXT_MAX_CHARS = 12000
+
 # State changes are brief and protected separately from an active warm-up or
 # translation request.  Shutdown must be able to observe and terminate a busy
 # worker immediately; it must never wait for an inference-sized critical section.
@@ -62,6 +68,17 @@ def language_name(language_code: str) -> str:
     return str(LANGUAGE_NAMES.get(normalized) or fallback)
 
 
+def _inline_story_context(source_texts, translations):
+    """Retain source context and accepted names when resuming or repairing."""
+    return json.dumps({
+        "source_transcript": source_texts,
+        "completed_translations": [
+            {"id": index, "text": value}
+            for index, value in enumerate(translations) if value is not None
+        ],
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
 def translate_segments(
     input_json_path: str,
     output_json_path: str,
@@ -77,6 +94,7 @@ def translate_segments(
     checkpoint_key: str = "",
 ):
     from linsub.services.gemini_translation import MODELS as GEMINI_MODELS
+    from linsub.services.gemini_translation import create_story_guide
     from linsub.services.gemini_translation import translate_texts
 
     if validation_mode not in {"auto", "manual"}:
@@ -119,14 +137,36 @@ def translate_segments(
             raise RuntimeError(f"Source sentence {index} has an invalid time range.") from exc
 
     source_texts = [segment["text"] for segment in segments]
+    source_quality = [
+        segment.get("asr_quality") if isinstance(segment.get("asr_quality"), dict) else None
+        for segment in segments
+    ]
+    inline_whole_story_context = (
+        using_gemini
+        and len(source_texts) <= _GEMINI_INLINE_CONTEXT_MAX_SEGMENTS
+        and sum(len(text) for text in source_texts) <= _GEMINI_INLINE_CONTEXT_MAX_CHARS
+    )
     source_codes = [str(segment.get("language") or source_language or "en").lower() for segment in segments]
+    detected_codes = Counter(
+        code for code in source_codes if code not in {"", "auto", "unknown", "und"}
+    )
+    translation_source_language = (
+        language_name(detected_codes.most_common(1)[0][0])
+        if source_language == "auto" and detected_codes
+        else language_name(source_language) if source_language != "auto" else "auto"
+    )
     speech_durations = [speech_duration(segment) for segment in segments]
     from linsub.services.translation_progress import TranslationProgress
 
     checkpoint = TranslationProgress(checkpoint_path or output_json_path + ".progress.json", {
         "segments": segments, "model": requested_model, "provider": provider,
         "source_language": source_language, "target_language": target_language,
-        "format": "sentence-translation-v1",
+        "format": (
+            "sentence-translation-v6-contextual-asr-pronoun-number-source-fidelity"
+            if provider == "hymt2" else
+            "sentence-translation-v5-pronoun-number-source-fidelity"
+            if inline_whole_story_context else "sentence-translation-v4-pronoun-number-source-fidelity"
+        ),
         "speech_length_policy": POLICY_VERSION,
         "generation": checkpoint_key,
     }, len(segments))
@@ -138,20 +178,52 @@ def translate_segments(
 
     missing = [index for index, value in enumerate(checkpoint.values) if value is None]
     completed = len(segments) - len(missing)
+    story_guide = ""
     if completed:
         log_to_video(video_id, f"Resuming translation: keeping {completed} of {len(segments)} completed sentences.")
         if progress_callback:
             progress_callback(completed, len(segments), "Resuming saved translations")
+    story_guide_path = Path(str(checkpoint.path) + ".story-guide.json")
+    def report_story_context(detail):
+        if progress_callback:
+            progress_callback(completed, len(segments), detail)
     if not missing:
         translations = list(checkpoint.values)
     elif using_gemini:
+        if inline_whole_story_context:
+            if completed:
+                # A resumed request contains only missing entries. Supply the
+                # complete story and saved renderings as context without another
+                # API call, and never overwrite already completed translations.
+                story_guide = _inline_story_context(source_texts, checkpoint.values)
+            log_to_video(
+                video_id,
+                "Using the complete short transcript as inline story context; skipping the separate guide request.",
+                component="TRANSLATE",
+            )
+        else:
+            if progress_callback:
+                progress_callback(completed, len(segments), "Analyzing story context and terminology")
+            log_to_video(video_id, "Analyzing the full transcript for plot and consistent character terminology.", component="TRANSLATE")
+            story_guide = create_story_guide(
+                source_texts, model=requested_model,
+                source_language=translation_source_language,
+                target_language=target_language_name,
+                video_id=video_id, cache_path=story_guide_path,
+                status_callback=report_story_context,
+            )
         translations = translate_texts(
             source_texts, model=requested_model,
-            source_language=language_name(source_language) if source_language != "auto" else "auto",
+            source_language=translation_source_language,
             target_language=target_language_name,
             video_id=video_id, progress_callback=progress_callback,
             initial_translations=checkpoint.values, result_callback=save_valid_batch,
             speech_durations=speech_durations,
+            story_guide=story_guide,
+            source_quality=source_quality,
+            max_batch_segments=(
+                _GEMINI_INLINE_CONTEXT_MAX_SEGMENTS if inline_whole_story_context else 32
+            ),
         )
     else:
         translations = _translate_with_hymt2_worker(
@@ -175,10 +247,23 @@ def translate_segments(
         translations,
         target_language_name,
     )
-    # HY-MT2 occasionally copies a labelled neighbouring sentence from the
-    # context block.  Retry only the affected sentences: first with the same
-    # useful context plus a stricter source boundary, then without context as
-    # a bounded final recovery.  Never rerun already-valid translations.
+    if using_gemini and suspect_indexes:
+        if inline_whole_story_context:
+            story_guide = _inline_story_context(source_texts, [
+                value if index not in suspect_indexes else None
+                for index, value in enumerate(translations)
+            ])
+        elif not story_guide:
+            story_guide = create_story_guide(
+                source_texts, model=requested_model,
+                source_language=translation_source_language,
+                target_language=target_language_name,
+                video_id=video_id, cache_path=story_guide_path,
+                status_callback=report_story_context,
+            )
+    # Translation models can return structurally valid but suspicious text
+    # (including invented kinship roles or collapsed number units). Retry only
+    # affected sentences; never rerun already-valid translations.
     for retry_number, include_context in enumerate((True, False), start=1):
         if not suspect_indexes:
             break
@@ -196,9 +281,11 @@ def translate_segments(
             if using_gemini:
                 retry_values = translate_texts(
                     [source_texts[index] for index in retry_indexes],
-                    model=requested_model, source_language="auto",
+                    model=requested_model, source_language=translation_source_language,
                     target_language=target_language_name, video_id=video_id,
                     speech_durations=[speech_durations[index] for index in retry_indexes],
+                    story_guide=story_guide,
+                    source_quality=[source_quality[index] for index in retry_indexes],
                 )
                 if len(retry_values) != len(retry_indexes):
                     raise ValueError("Recovery returned an incomplete translation batch.")
@@ -275,6 +362,11 @@ def translate_segments(
             }
         if segment.get("timing_source") == "imported-srt-v1" and segment.get("segment_id"):
             translated_segment["segment_id"] = segment["segment_id"]
+        quality = source_quality[index - 1]
+        if isinstance(quality, dict):
+            translated_segment["asr_quality"] = quality
+            if quality.get("status") == "review":
+                warnings.append("review_asr")
         if warnings:
             translated_segment["translation_warnings"] = warnings
             translated_segment["translation_warning_text"] = translated_segment["text"]
@@ -303,6 +395,7 @@ def translate_segments(
     log_to_video(video_id, f"Saved translated segments to: {output_json_path}")
     if not retain_checkpoint:
         checkpoint.clear()
+        Path(str(checkpoint.path) + ".story-guide.json").unlink(missing_ok=True)
     return translated_segments
 
 
@@ -888,6 +981,10 @@ def clean_translation(text: str) -> str:
 def is_suspicious_translation(source_text: str, translated_text: str, target_language_name: str) -> bool:
     if _invalid_translation(translated_text):
         return True
+    if _unsupported_chinese_kinship_pronoun(source_text, translated_text, target_language_name):
+        return True
+    if _collapsed_jiazi_multiplier(source_text, translated_text, target_language_name):
+        return True
     # Older prompts labelled neighbouring subtitles P1/N1. A rare model
     # failure can copy that scaffolding into the answer (as happened in
     # work4). Continue rejecting both historical and current prompt markers.
@@ -913,6 +1010,65 @@ def is_suspicious_translation(source_text: str, translated_text: str, target_lan
     if required_script and len(source_content) >= 12:
         return re.search(required_script, translated_text) is None
     return False
+
+
+def _unsupported_chinese_kinship_pronoun(source_text: str, translated_text: str, target_language_name: str) -> bool:
+    """Catch Vietnamese kinship roles invented from Chinese plural 'we'."""
+    if str(target_language_name or "").casefold() not in {"vietnamese", "tiếng việt"}:
+        return False
+    source = str(source_text or "")
+    if not re.search(r"(?:我们|我們|咱们|咱們|我等|吾等)", source):
+        return False
+    # A role may be used if it is actually stated in Chinese; generic 我们 does
+    # not tell us that the speaker is an uncle or an aunt.
+    if re.search(r"(?:叔叔|叔父|阿叔|伯父|舅舅|舅父|姑父|姨父)", source):
+        return False
+    return bool(re.search(
+        r"\b(?:bọn|tụi|mấy|các)\s+chú\b|\bchú\s+chỉ\s+mong\b",
+        str(translated_text or ""),
+        re.IGNORECASE,
+    ))
+
+
+_CHINESE_NUMERAL_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+
+
+def _parse_simple_chinese_number(value: str) -> int | None:
+    total = 0
+    current = 0
+    for character in value:
+        if character in _CHINESE_NUMERAL_DIGITS:
+            current = _CHINESE_NUMERAL_DIGITS[character]
+        elif character in {"十", "百", "千"}:
+            unit = {"十": 10, "百": 100, "千": 1000}[character]
+            total += (current or 1) * unit
+            current = 0
+        else:
+            return None
+    return total + current
+
+
+def _collapsed_jiazi_multiplier(source_text: str, translated_text: str, target_language_name: str) -> bool:
+    """Reject the common error of translating N Chinese 甲子 as one 60-year cycle."""
+    if str(target_language_name or "").casefold() not in {"vietnamese", "tiếng việt"}:
+        return False
+    match = re.search(r"([零〇一二两三四五六七八九十百千]+)个?甲子", str(source_text or ""))
+    if not match:
+        return False
+    count = _parse_simple_chinese_number(match.group(1))
+    if count is None or count <= 1:
+        return False
+    translated = str(translated_text or "").casefold()
+    one_cycle = re.search(r"(?:\b60\b|\bsáu\s+mươi\b)\s*(?:năm\b|năm\s+tu\b)", translated)
+    if not one_cycle:
+        return False
+    expected_digits = str(count * 60)
+    expected_vietnamese_six_hundred = count == 10 and bool(re.search(r"\bsáu\s+trăm\b", translated))
+    preserves_counted_unit = bool(re.search(r"\b(?:mười|10)\s+giáp\s*(?:tý|tử)\b", translated)) if count == 10 else False
+    return expected_digits not in translated and not expected_vietnamese_six_hundred and not preserves_counted_unit
 
 
 def _invalid_translation(text: str) -> bool:

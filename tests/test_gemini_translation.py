@@ -119,7 +119,8 @@ class GeminiTranslationTests(unittest.TestCase):
             payload = json.loads(outgoing.data)
             self.assertEqual(payload["generationConfig"]["thinkingConfig"]["thinkingLevel"], "minimal")
             self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
-            entries = json.loads(payload["contents"][0]["parts"][0]["text"])
+            body = json.loads(payload["contents"][0]["parts"][0]["text"])
+            entries = body["entries"]
             requests.append(entries)
             return _Response({"candidates": [{"content": {"parts": [{"text": json.dumps({
                 "translations": [{"id": row["id"], "text": "VI " + row["text"]} for row in entries]
@@ -138,6 +139,101 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(result, ["VI " + text for text in texts])
         self.assertEqual([len(chunk) for chunk in requests], [24, 24, 2])
         self.assertNotIn("secret-test-key", json.dumps(requests))
+
+    def test_short_gemini_transcript_uses_one_full_context_request(self):
+        requests = []
+
+        def fake_open(outgoing, timeout):
+            payload = json.loads(outgoing.data)
+            body = json.loads(payload["contents"][0]["parts"][0]["text"])
+            entries = body["entries"]
+            requests.append(body)
+            return _Response({"candidates": [{"finishReason": "STOP", "content": {"parts": [{
+                "text": json.dumps({"translations": [
+                    {"id": row["id"], "text": f"Lời thoại tiếng Việt số {row['id'] + 1}"}
+                    for row in entries
+                ]})
+            }]}}]})
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            output = root / "translated.json"
+            source.write_text(json.dumps([
+                {
+                    "start": index * 2,
+                    "end": index * 2 + 1,
+                    "text": f"第{index + 1}句话",
+                    "language": "zh",
+                    **({"asr_quality": {"status": "review", "reasons": ["repetitive_output"]}}
+                       if index == 10 else {}),
+                }
+                for index in range(25)
+            ], ensure_ascii=False), encoding="utf-8")
+            with (
+                patch.object(gemini_translation.secure_credentials, "read_secret", return_value="fixture-key"),
+                patch.object(gemini_translation.request, "urlopen", side_effect=fake_open) as urlopen,
+                patch.object(gemini_translation, "create_story_guide", side_effect=AssertionError("extra request")),
+                patch.object(gemini_translation, "check_cancellation"),
+                patch.object(gemini_translation, "log_to_video"),
+                patch.object(translation, "log_to_video"),
+                patch.object(translation, "shutdown_hymt2_worker"),
+            ):
+                translated = translation.translate_segments(
+                    str(source), str(output), "fixture", source_language="auto", provider="gemini",
+                    translation_model="gemini-3.1-flash-lite",
+                )
+            saved_output = output.read_text(encoding="utf-8")
+
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(len(requests[0]["entries"]), 25)
+        self.assertEqual(requests[0]["context_before"], [])
+        self.assertEqual(requests[0]["context_after"], [])
+        self.assertEqual(requests[0]["entries"][10]["asr_quality"], {
+            "status": "review", "reasons": ["repetitive_output"],
+        })
+        self.assertEqual(len(translated), 25)
+        self.assertIn("Lời thoại tiếng Việt số 25", saved_output)
+
+    def test_gemini_receives_adjacent_context_and_asr_review_flag(self):
+        captured = []
+
+        def fake_open(outgoing, timeout):
+            payload = json.loads(outgoing.data)
+            body = json.loads(payload["contents"][0]["parts"][0]["text"])
+            captured.append((payload["systemInstruction"]["parts"][0]["text"], body))
+            entries = body["entries"]
+            return _Response({"candidates": [{"finishReason": "STOP", "content": {"parts": [{
+                "text": json.dumps({"translations": [
+                    {"id": row["id"], "text": "Bản dịch"} for row in entries
+                ]})
+            }]}}]})
+
+        with (
+            patch.object(gemini_translation.secure_credentials, "read_secret", return_value="fixture-key"),
+            patch.object(gemini_translation.request, "urlopen", side_effect=fake_open),
+            patch.object(gemini_translation, "check_cancellation"),
+        ):
+            result = gemini_translation.translate_texts(
+                [f"source {index}" for index in range(50)],
+                model="gemini-3.1-flash-lite", source_language="Chinese",
+                target_language="Vietnamese", video_id="fixture",
+                source_quality=[None] * 24 + [
+                    {"status": "review", "reasons": ["low_log_probability"]}
+                ] + [None] * 25,
+            )
+
+        self.assertEqual(result, ["Bản dịch"] * 50)
+        prompt, body = captured[1]
+        self.assertEqual(body["context_before"], ["source 20", "source 21", "source 22", "source 23"])
+        self.assertEqual(body["context_after"], ["source 48", "source 49"])
+        self.assertEqual(body["entries"][0]["asr_quality"], {
+            "status": "review", "reasons": ["low_log_probability"],
+        })
+        self.assertIn("neighboring source sentences", prompt)
+        self.assertIn("obvious recognition error", prompt)
+        self.assertIn("do not infer an uncle/aunt", prompt)
+        self.assertIn("十个甲子 is 600 years, not 60", prompt)
 
     def test_missing_key_does_not_send_any_request(self):
         with (
