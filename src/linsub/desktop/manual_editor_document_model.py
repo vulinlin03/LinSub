@@ -325,11 +325,14 @@ class ManualEditorDocumentModel(QObject):
         segment = clip.metadata.get("segment_payload") or {}
         if segment.get("translation_warning_text") == clip.name:
             for code in segment.get("translation_warnings", []):
-                warnings.append({"code": str(code), "message": (
+                message = (
                     "Bản dịch có ký tự hoặc nội dung bất thường. Hãy kiểm tra câu này."
                     if code == "invalid_text" else
+                    "Whisper có chỉ dấu nhận dạng chưa chắc chắn. Hãy đối chiếu câu nguồn với âm thanh."
+                    if code == "review_asr" else
                     "Câu dịch có thể cần chỉnh sửa. Hãy đối chiếu với lời thoại gốc."
-                )})
+                )
+                warnings.append({"code": str(code), "message": message})
         duration_seconds = max(0.001, clip.duration_ms / 1000)
         characters = len("".join(str(clip.name or "").split()))
         cps = characters / duration_seconds
